@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Manifold · 07 Neural Networks</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/ml.js"></script><script src="../assets/engine.js"></script>
+</head>
+<body>
+<script>
+const ui = MF.shell({
+  num: 7, title: 'Neural Networks', sub: '2-4-1 MLP · FOUR STRAIGHT LINES MAKE A CIRCLE',
+  mission: 'Train the net past 85% on data no straight line can separate',
+  metric: { label: 'training accuracy', targetText: 'target 85', targetPct: 85, format: v => (v*100).toFixed(1)+'%' },
+  prev: { href: '06-optimization.html', name: 'Optimization' },
+  next: { href: '08-pca.html', name: 'Dimensionality Reduction' }
+});
+
+let seed = 3, netSeed = 1;
+let pts = ML.genRings(seed);
+let net = ML.mlpInit(netSeed);
+let training = true, epoch = 0, overlay = -1;
+let firstDone = false, viewed = new Set();
+
+/* controls */
+const lrCtl = MF.sliderCard(ui.rail, {
+  id: 'lr', label: 'Learning rate', min: -1.3, max: 0.7, step: 0.05, value: 0.18,
+  ends: ['0.05 — slow burn', '5 — risky'], bigFmt: v => 'η = ' + Math.pow(10, v).toFixed(2)
+});
+lrCtl.input.addEventListener('input', () => lrCtl.sync());
+
+const trainBtn = MF.button(ui.rail, 'Pause training ⏸', '', () => {
+  training = !training;
+  trainBtn.firstChild.textContent = training ? 'Pause training ⏸' : 'Resume training ▸';
+});
+MF.button(ui.rail, 'Re-roll the weights', 'new random start', () => {
+  netSeed++; net = ML.mlpInit(netSeed); epoch = 0; training = true;
+  trainBtn.firstChild.textContent = 'Pause training ⏸';
+  MF.toast('WEIGHTS RESET', 'Same data, same architecture — brand new random start.');
+});
+
+/* hidden neuron tiles */
+const tilesCard = document.createElement('div');
+tilesCard.className = 'card card-pad';
+tilesCard.innerHTML = '<span class="label">The 4 hidden neurons — click one</span><div id="tiles" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:9px"></div><span class="hint" id="tile-hint" style="margin-top:8px;display:block">each tile is one neuron’s private opinion of the whole plane</span>';
+ui.rail.appendChild(tilesCard);
+const tileCvs = [];
+for (let i = 0; i < 4; i++) {
+  const c = document.createElement('canvas');
+  c.width = 120; c.height = 80;
+  c.style.cssText = 'width:100%;height:auto;border:2px solid rgba(var(--text-rgb),.18);border-radius:6px;cursor:pointer;transition:border-color .2s ease';
+  c.title = 'neuron h' + (i+1);
+  c.onclick = () => {
+    overlay = overlay === i ? -1 : i;
+    viewed.add(i);
+    tileCvs.forEach((tc, j) => tc.style.borderColor = j === overlay ? 'var(--accent)' : 'rgba(var(--text-rgb),.18)');
+    document.getElementById('tile-hint').textContent = overlay < 0 ? 'each tile is one neuron’s private opinion of the whole plane' : 'neuron h' + (overlay+1) + '’s edge is drawn on the main canvas — one straight fold';
+    if (viewed.size >= 4 && quest.current() === 'peek') { quest.done('peek'); insights.unlock('fold'); }
+  };
+  document.getElementById('tiles').appendChild(c);
+  tileCvs.push(c);
+}
+
+MF.legend(ui.rail, [
+  ['<span style="width:11px;height:11px;border-radius:50%;background:var(--classA);display:block"></span>', 'class A — the ring outside'],
+  ['<span style="width:10px;height:10px;background:var(--classB);transform:rotate(45deg);display:block;margin:0 1px"></span>', 'class B — the blob inside'],
+  ['<span style="width:12px;height:3px;background:var(--accent);display:block"></span>', 'selected neuron’s straight edge'],
+]);
+
+/* quest */
+const quest = MF.questCtl(ui.quest, [
+  { id: 'train', title: 'Train it past 85%', desc: 'Orange lives INSIDE blue — module 01’s straight line is mathematically hopeless here. The net is already training; watch the blob of orange territory grow and curl. If it stalls, nudge η or re-roll the weights.' },
+  { id: 'predict', title: 'Predict: one hidden neuron alone', desc: 'Each hidden neuron, by itself, can only draw…',
+    predict: { q: '', options: ['A straight edge', 'A curvy blob'], answer: 0,
+      whyRight: 'Right — each neuron is just module 01’s linear boundary with a soft squash. The curve comes from stacking them. Click all 4 tiles to see each neuron’s straight edge: step 3.',
+      whyWrong: 'Surprise: each neuron is literally module 01 — a straight line plus a squash. No single neuron can curve. The magic is in ADDING four straight opinions. Click all 4 tiles to see: step 3.' } },
+  { id: 'peek', title: 'Inspect all 4 neurons', desc: 'Click each tile. Its straight edge overlays the main canvas. Four straight folds, weighted and summed, wrap into a closed curve around orange. That is the entire secret of deep learning.' },
+  { id: 'reroll', title: 'Re-roll and retrain', desc: 'Press “Re-roll the weights” and train past 85% again. Then peek at the tiles: the individual folds land in totally different places — but the final boundary looks the same. Many different brains, same answer.' },
+], { onAll: showCode });
+
+const insights = MF.insights(ui.side, [
+  { id: 'stack', title: 'A network is layered module 01', lockedHint: 'train past 85% to unlock',
+    body: 'Hidden layer: four copies of “weigh the inputs, add a bias, squash” — four straight boundaries with soft edges. Output layer: ONE more of the same, but its inputs are the four opinions instead of x and y. Stacking simple deciders is what “deep” means. Nothing else was added.' },
+  { id: 'fold', title: 'Straight pieces, curved whole', lockedHint: 'view all 4 neuron tiles to unlock',
+    body: 'tanh gives each straight edge a soft gradient instead of a hard flip. Sum four soft ramps with the right weights and the level-set where the sum crosses 0.5 can bend, close, and wrap a blob. More neurons = more folds = any shape you like (that’s the universal approximation theorem, informally).' },
+  { id: 'many', title: 'Many nets, one behavior', lockedHint: 're-roll and retrain to unlock',
+    body: 'Different random starts → gradient descent finds different weights → the INSIDE of the net looks completely different, yet the outside behavior matches. Real networks are the same: there is no “the” solution, just millions of equally good ones. This is also why neural nets are hard to interpret.' },
+]);
+
+/* main canvas */
+const fit = MF.setupCanvas(ui.canvas, 0.66, () => {});
+
+function drawTiles() {
+  tileCvs.forEach((c, i) => {
+    const tctx = c.getContext('2d');
+    const w = c.width, h = c.height;
+    tctx.clearRect(0, 0, w, h);
+    const cols = 30, rows = 20;
+    for (let a = 0; a < cols; a++) for (let b = 0; b < rows; b++) {
+      const x = (a + 0.5) / cols, y = (b + 0.5) / rows;
+      const hval = Math.tanh(net.w1[i][0]*(x-0.5)*4 + net.w1[i][1]*(y-0.5)*4 + net.b1[i]);
+      const v = (hval + 1) / 2;
+      tctx.fillStyle = 'rgb(' + Math.round(30 + 190*v) + ',' + Math.round(60 + 120*v) + ',' + Math.round(120 + 80*(1-v)) + ')';
+      tctx.fillRect(a*w/cols, b*h/rows, w/cols + 0.5, h/rows + 0.5);
+    }
+  });
+}
+
+function neuronLine(ctx, W, H, i) {
+  // w1[i]·((p-0.5)*4) + b1[i] = 0
+  const f = (x,y) => net.w1[i][0]*(x-0.5)*4 + net.w1[i][1]*(y-0.5)*4 + net.b1[i];
+  const seg = [];
+  [[0,0,1,0],[1,0,1,1],[1,1,0,1],[0,1,0,0]].forEach(([x1,y1,x2,y2]) => {
+    const v1 = f(x1,y1), v2 = f(x2,y2);
+    if ((v1<=0)!==(v2<=0)) { const t = v1/(v1-v2); seg.push([x1+(x2-x1)*t, y1+(y2-y1)*t]); }
+  });
+  if (seg.length >= 2) {
+    ctx.strokeStyle = MF.cssVar('--accent'); ctx.lineWidth = 3; ctx.setLineDash([7,5]);
+    ctx.beginPath(); ctx.moveTo(seg[0][0]*W, seg[0][1]*H); ctx.lineTo(seg[1][0]*W, seg[1][1]*H); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+}
+
+function narration(acc, loss) {
+  if (epoch < 20) return 'Epoch ' + epoch + ': the four folds start in random places (the re-rolled weights). Backprop is nudging every weight downhill on the loss, exactly like module 06 — just 17 numbers at once.';
+  if (acc >= 0.85 && overlay >= 0) return 'Neuron h' + (overlay+1) + ': one straight fold. Its tile shows its opinion of every point. The output neuron blends 4 such opinions into the curved territory behind it.';
+  if (acc >= 0.85) return 'Accuracy ' + (acc*100).toFixed(1) + '% — a closed curve around orange, built purely from straight pieces. Click the tiles to see the pieces.';
+  return 'Epoch ' + epoch + ' · loss ' + loss.toFixed(3) + ' · acc ' + (acc*100).toFixed(1) + '%. Watch orange territory get surrounded as the folds rotate into place.';
+}
+
+let frame = 0;
+(function loop() {
+  if (training) {
+    const lr = Math.pow(10, lrCtl.value());
+    for (let i = 0; i < 8; i++) { ML.mlpStep(net, pts, lr); epoch++; }
+  }
+  const ctx = fit.ctx, W = fit.W(), H = fit.H();
+  const A = MF.cssVar('--classA'), B = MF.cssVar('--classB');
+  ctx.clearRect(0,0,W,H);
+  MF.field(ctx, W, H, 70, 46, (x,y) => ML.mlpForward(net,x,y).out > 0.5 ? 1 : 0, A, B, 0.17);
+  MF.gridLines(ctx, W, H);
+  pts.forEach(p => {
+    if (p.label===0) MF.dot(ctx, p.x*W, p.y*H, 4, A);
+    else MF.diamond(ctx, p.x*W, p.y*H, 4.5, B);
+  });
+  if (overlay >= 0) neuronLine(ctx, W, H, overlay);
+  if (frame % 6 === 0) drawTiles();
+  frame++;
+
+  const acc = ML.accuracy(pts, (x,y) => ML.mlpForward(net,x,y).out > 0.5 ? 1 : 0);
+  const loss = ML.mlpLoss(net, pts);
+  const ok = ui.metric.set(acc, acc*100, acc >= 0.85);
+  ui.stageInfo.textContent = '2 inputs → 4 tanh neurons → 1 sigmoid · 17 weights · epoch ' + epoch;
+  ui.stageExtra.textContent = 'loss ' + loss.toFixed(3);
+  ui.footL.textContent = 'shading = the network’s live answer everywhere';
+  ui.footR.textContent = 'dashed teal = selected neuron’s straight edge';
+  ui.narrate.say(narration(acc, loss));
+
+  if (ok && quest.current()==='train') { firstDone = true; quest.done('train'); insights.unlock('stack'); }
+  if (ok && netSeed > 1 && quest.current()==='reroll') { quest.done('reroll'); insights.unlock('many'); }
+  requestAnimationFrame(loop);
+})();
+
+function showCode() {
+  MF.codeReveal(ui.codePanel, {
+    moduleNum: 7, filename: 'tiny_net.py',
+    intro: 'You trained a real neural network and looked inside its four neurons. This is that network — forward pass and backprop — in numpy. Seventeen numbers, zero magic.',
+    outro: 'GPT is this, with billions of weights instead of 17 and fancier layers — but “multiply, add, squash, then nudge everything downhill” is still the whole story.',
+    lines: [
+      { c: 'import numpy as np', n: 'numpy multiplies matrices for us — a layer is just one matrix multiply.' },
+      { c: '', n: '' },
+      { c: 'W1 = np.random.randn(2, 4); b1 = np.random.randn(4)', n: 'The hidden layer: 4 neurons × (2 weights + 1 bias). Random start — this is what “Re-roll the weights” rolled.' },
+      { c: 'W2 = np.random.randn(4); b2 = np.random.randn()', n: 'The output neuron: it weighs the 4 hidden opinions. Total: 17 numbers. You watched all of them learn.' },
+      { c: '', n: '' },
+      { c: 'def forward(X):', n: 'The forward pass — what ran at every pixel to paint the shading.' },
+      { c: '    H = np.tanh(X @ W1 + b1)', n: 'Four straight boundaries + soft squash = the four tiles you clicked. tanh is why each fold has a gradient instead of a hard edge.' },
+      { c: '    return sigmoid(H @ W2 + b2), H', n: 'One more weigh-and-squash, but its inputs are opinions, not coordinates. Stacked module 01 — that’s the whole trick.' },
+      { c: '', n: '' },
+      { c: 'for epoch in range(2000):', n: 'The training loop that was running the whole time you watched.' },
+      { c: '    out, H = forward(X)', n: 'Predict everything…' },
+      { c: '    d_out = out - y', n: '…measure the error on every point, exactly like logistic regression.' },
+      { c: '    gW2 = H.T @ d_out; gb2 = d_out.sum()', n: 'How should the output layer change? Same gradient math as module 01.' },
+      { c: '    d_H = np.outer(d_out, W2) * (1 - H**2)', n: 'BACKPROP: pass each point’s error backwards through the output weights, times tanh’s slope. The chain rule, nothing more — blame flows backwards.' },
+      { c: '    gW1 = X.T @ d_H; gb1 = d_H.sum(axis=0)', n: 'Now every hidden weight knows its share of the blame…' },
+      { c: '    W1 -= lr*gW1; b1 -= lr*gb1; W2 -= lr*gW2; b2 -= lr*gb2', n: '…and everything steps downhill together. Module 06’s update rule, applied to all 17 numbers at once. That’s a neural network training.' },
+    ]
+  });
+}
+</script>
+</body>
+</html>

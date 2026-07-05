@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Manifold · 09 Clustering</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/ml.js"></script><script src="../assets/engine.js"></script>
+</head>
+<body>
+<script>
+const ui = MF.shell({
+  num: 9, title: 'Clustering', sub: 'K-MEANS · FINDING GROUPS NOBODY LABELED',
+  mission: 'Get inertia below 0.90 by choosing k and iterating',
+  metric: { label: 'inertia — total messiness', targetText: 'target < 0.90', targetPct: 90.6, format: v => v.toFixed(3) },
+  prev: { href: '08-pca.html', name: 'Dimensionality Reduction' },
+  next: { href: '10-rl.html', name: 'Reinforcement Learning' }
+});
+
+/* three real blobs, no labels shown to the algorithm */
+function genClusters(seed, n = 88) {
+  const r = ML.rand(seed * 1000 + 7);
+  const pts = [];
+  const centers = [[0.24,0.3],[0.72,0.28],[0.55,0.74]];
+  centers.forEach(c => {
+    for (let i = 0; i < n/3; i++) {
+      const a = r()*6.283, d = Math.sqrt(r())*0.13;
+      pts.push({ x: c[0]+Math.cos(a)*d, y: c[1]+Math.sin(a)*d });
+    }
+  });
+  return pts.filter(p => p.x>0.03 && p.x<0.97 && p.y>0.04 && p.y<0.96);
+}
+function initCentroids(k, seed) {
+  const r = ML.rand(seed * 31 + k);
+  // standard trick: start centroids ON random data points — far fewer bad endings
+  return Array.from({length: k}, () => {
+    const p = pts[Math.floor(r() * pts.length)];
+    return { x: p.x, y: p.y };
+  });
+}
+
+let seed = 13, k = 3;
+let pts = genClusters(seed);
+let cents = initCentroids(k, seed);
+let assign = pts.map(() => 0);
+let iter = 0, stepped = 0, converged = false;
+const elbow = {};   // k -> best inertia seen
+const CLUS = ['#3FB68B','#6E96E8','#E8A45C','#C77FD6','#E06A5E','#8FA6BC'];
+
+/* controls */
+const kCtl = MF.sliderCard(ui.rail, {
+  id: 'k', label: 'k (number of clusters)', min: 1, max: 6, step: 1, value: 3,
+  ends: ['1 — one big pile', '6 — micromanaging'], bigFmt: v => v
+});
+kCtl.input.addEventListener('input', () => {
+  k = kCtl.value(); kCtl.sync();
+  cents = initCentroids(k, seed); iter = 0; converged = false;
+  update(true);
+});
+
+const rowBtns = document.createElement('div');
+rowBtns.className = 'btnrow';
+ui.rail.appendChild(rowBtns);
+MF.button(rowBtns, 'Step iteration →', '', () => { stepOnce(); stepped++; if (stepped>=1 && quest.current()==='step') quest.done('step'); });
+MF.button(rowBtns, 'Run to convergence', '', () => {
+  let guard = 0;
+  while (!converged && guard++ < 60) stepOnce(true);
+  update();
+  if (quest.current()==='run') { quest.done('run'); insights.unlock('lloyd'); }
+});
+
+MF.button(ui.rail, 'Deal me new data + reinit centroids', 'seed ' + seed, function () {
+  seed++; this.lastChild.textContent = 'seed ' + seed;
+  pts = genClusters(seed); cents = initCentroids(k, seed);
+  iter = 0; converged = false;
+  for (const key in elbow) delete elbow[key];
+  drawElbow(); update(true);
+});
+
+/* elbow chart */
+const elbowCard = document.createElement('div');
+elbowCard.className = 'card card-pad';
+elbowCard.innerHTML = '<span class="label">Your elbow chart — final inertia per k</span><canvas id="elbow" style="width:100%;height:96px;margin-top:8px;cursor:default"></canvas><span class="hint">converge at several k values to fill this in</span>';
+ui.rail.appendChild(elbowCard);
+const elbowFit = MF.setupCanvas(document.getElementById('elbow'), 0.34, drawElbow);
+
+MF.legend(ui.rail, [
+  ['<span style="width:11px;height:11px;border-radius:50%;background:#3FB68B;display:block"></span>', 'a point, colored by current cluster'],
+  ['<span style="width:13px;height:13px;border:3px solid #3FB68B;border-radius:50%;display:block"></span>', 'a centroid — the cluster’s center of mass'],
+]);
+
+/* quest */
+const quest = MF.questCtl(ui.quest, [
+  { id: 'step', title: 'Take ONE step by hand', desc: 'k-means alternates two moves: (1) every point joins its nearest centroid, (2) every centroid moves to the middle of its members. Press “Step iteration” once and watch both happen.' },
+  { id: 'predict', title: 'Predict: keep stepping', desc: 'With every iteration, inertia (total messiness) will…',
+    predict: { q: '', options: ['Always go down or stay flat', 'Bounce up and down', 'Slowly go up'], answer: 0,
+      whyRight: 'Right — both moves can only reduce each point’s distance to its centroid, so inertia can never rise. That guarantees k-means always settles. Run it to convergence: step 3.',
+      whyWrong: 'Here’s the neat part: BOTH moves can only shrink distances (joining a nearer centroid shrinks it; moving to the average shrinks it). So inertia can never rise — which is why k-means is guaranteed to settle. Run it to convergence: step 3.' } },
+  { id: 'run', title: 'Run to convergence', desc: 'Let it iterate until the centroids stop moving. Watch iter count in the corner and inertia in the mission bar staircase its way down.' },
+  { id: 'mission', title: 'Hunt inertia below 0.90', desc: 'Try different k values and re-run. Fill in your elbow chart. Something to chew on: raising k ALWAYS lowers inertia — so why isn’t the answer just k = 88?' },
+], { onAll: () => { insights.unlock('elbow'); showCode(); } });
+
+const insights = MF.insights(ui.side, [
+  { id: 'unsup', title: 'Nobody labeled anything', lockedHint: 'take a step to unlock',
+    body: 'Every module so far had answers to learn from (labels). Here there are none — the algorithm invents the groups itself by pure geometry. That’s unsupervised learning: find structure, don’t predict a given answer.' },
+  { id: 'lloyd', title: 'Lloyd’s algorithm', lockedHint: 'run to convergence to unlock',
+    body: 'Assign → average → repeat. Each move is greedy and local, so k-means can settle into a bad arrangement if the starting centroids are unlucky — re-deal a few times and you’ll see different endings. Real libraries just run it many times and keep the best (that’s the n_init parameter).' },
+  { id: 'elbow', title: 'Why not k = 88?', lockedHint: 'finish the mission to unlock',
+    body: 'k = number-of-points gives inertia 0 — every point is its own “cluster”. Perfectly tight, perfectly useless: it explains nothing. Look at your elbow chart: inertia crashes until k matches the real structure (3 here), then barely improves. Pick the bend — the elbow. Choosing k is a human judgment call, and that’s the honest truth about clustering.' },
+]);
+
+const fit = MF.setupCanvas(ui.canvas, 0.66, () => update());
+
+function stepOnce(silent) {
+  const res = ML.kmeansStep(pts, cents);
+  const moved = res.centroids.some((c,i) => Math.hypot(c.x-cents[i].x, c.y-cents[i].y) > 1e-5);
+  assign = res.assign; cents = res.centroids; iter++;
+  if (!moved) {
+    converged = true;
+    elbow[k] = Math.min(elbow[k] ?? Infinity, ML.inertia(pts, cents, assign));
+    drawElbow();
+  }
+  if (!silent) update();
+}
+
+function drawElbow() {
+  const ctx = elbowFit.ctx, W = elbowFit.W(), H = elbowFit.H();
+  ctx.clearRect(0,0,W,H);
+  ctx.strokeStyle = 'rgba(' + MF.cssVar('--text-rgb') + ',0.15)';
+  ctx.strokeRect(0.5,0.5,W-1,H-1);
+  const ks = Object.keys(elbow).map(Number).sort((a,b)=>a-b);
+  if (!ks.length) return;
+  const maxI = Math.max(...Object.values(elbow), 1);
+  const xs = kk => (kk-1)/5*(W-24)+12, ys = v => H-8-(v/maxI)*(H-18);
+  ctx.strokeStyle = MF.cssVar('--accent'); ctx.lineWidth = 2; ctx.beginPath();
+  ks.forEach((kk,i) => { const x=xs(kk), y=ys(elbow[kk]); i?ctx.lineTo(x,y):ctx.moveTo(x,y); });
+  ctx.stroke();
+  ks.forEach(kk => {
+    MF.dot(ctx, xs(kk), ys(elbow[kk]), 3, MF.cssVar('--accent'));
+    ctx.fillStyle = 'rgba(' + MF.cssVar('--text-rgb') + ',0.6)';
+    ctx.font = '10px IBM Plex Mono';
+    ctx.fillText('k'+kk, xs(kk)-6, H-2);
+  });
+}
+
+function narration(inertia) {
+  if (iter === 0) return 'The rings are k = ' + k + ' centroids dropped at random. The colors are just “which centroid is nearest right now”. Nothing has learned anything yet — take a step.';
+  if (converged) return 'Converged after ' + iter + ' iterations — no centroid moved, so nothing will ever change again. Final inertia ' + inertia.toFixed(3) + ' at k = ' + k + '. Logged to your elbow chart.';
+  return 'Iteration ' + iter + ': points defected to nearer centroids, then each centroid slid to its members’ average. Inertia ' + inertia.toFixed(3) + ' — down or flat, never up.';
+}
+
+function update(fresh) {
+  if (fresh) { assign = pts.map(p => { let b=0,bd=Infinity; cents.forEach((c,i)=>{const d=(c.x-p.x)**2+(c.y-p.y)**2; if(d<bd){bd=d;b=i;}}); return b; }); }
+  const ctx = fit.ctx, W = fit.W(), H = fit.H();
+  ctx.clearRect(0,0,W,H);
+  MF.gridLines(ctx, W, H);
+  pts.forEach((p,i) => MF.dot(ctx, p.x*W, p.y*H, 4, CLUS[assign[i] % CLUS.length]));
+  cents.forEach((c,i) => MF.dot(ctx, c.x*W, c.y*H, 8, MF.cssVar('--card'), CLUS[i % CLUS.length], 3.5));
+  const inertia = ML.inertia(pts, cents, assign);
+  const ok = ui.metric.set(inertia, Math.max(4, 100 - inertia*10.4), converged && inertia < 0.90);
+  ui.stageInfo.textContent = 'Lloyd’s algorithm · assign → recompute centroid → repeat · n = ' + pts.length;
+  ui.stageExtra.textContent = 'iter ' + iter + (converged ? ' · converged' : '');
+  ui.footL.textContent = 'colors = current nearest-centroid assignment (no labels exist!)';
+  ui.footR.textContent = 'rings = centroids';
+  ui.narrate.say(narration(inertia));
+  if (stepped >= 1) insights.unlock('unsup');
+  if (ok && quest.current()==='mission') quest.done('mission');
+}
+update(true);
+
+function showCode() {
+  MF.codeReveal(ui.codePanel, {
+    moduleNum: 9, filename: 'kmeans.py',
+    intro: 'You ran Lloyd’s algorithm by hand — step, watch, converge — and discovered why picking k is the human’s job. Here’s the loop.',
+    outro: 'sklearn’s KMeans(n_clusters=k, n_init=10) is this plus 10 random restarts, keeping the best — the fix for the unlucky starts you saw.',
+    lines: [
+      { c: 'import random', n: 'k-means starts with pure luck: random centroid positions. You saw how much the start matters.' },
+      { c: '', n: '' },
+      { c: 'centroids = random.sample(points, k)', n: 'Drop k rings at random — the “reinit centroids” button. k is YOUR choice; the algorithm never questions it.' },
+      { c: '', n: '' },
+      { c: 'while True:', n: 'The loop you were stepping through one press at a time.' },
+      { c: '    clusters = [[] for _ in range(k)]', n: '' },
+      { c: '    for p in points:', n: 'MOVE 1 — the assign step…' },
+      { c: '        nearest = min(range(k), key=lambda i: dist(p, centroids[i]))', n: '…every point joins its nearest ring. This is what recolored the dots each iteration.' },
+      { c: '        clusters[nearest].append(p)', n: '' },
+      { c: '    new_centroids = [mean(c) for c in clusters]', n: 'MOVE 2 — each ring slides to the center of mass of its members. That’s the hop you watched the rings make.' },
+      { c: '    if new_centroids == centroids: break', n: 'Nobody moved → nothing can ever change → converged. Your “iter N · converged” moment. Guaranteed to happen, because inertia can only fall (you predicted this).' },
+      { c: '    centroids = new_centroids', n: '' },
+      { c: '', n: '' },
+      { c: 'inertia = sum(dist(p, centroids[assign[p]])**2 for p in points)', n: 'The mission-bar number: total squared messiness. Falls forever as k grows — which is why the elbow chart, not inertia alone, chooses k.' },
+    ]
+  });
+}
+</script>
+</body>
+</html>

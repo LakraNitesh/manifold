@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Manifold · 02 Distance-Based Learning</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/ml.js"></script><script src="../assets/engine.js"></script>
+</head>
+<body>
+<script>
+const ui = MF.shell({
+  num: 2, title: 'Distance-Based Learning', sub: 'K-NEAREST NEIGHBORS',
+  mission: 'Get held-out accuracy above 95% by tuning k',
+  metric: { label: 'held-out accuracy', targetText: 'target 95', targetPct: 95, format: v => (v*100).toFixed(1)+'%' },
+  prev: { href: '01-linear.html', name: 'Linear Decision Boundaries' },
+  next: { href: '03-trees.html', name: 'Tree Learning' }
+});
+
+/* ---------- state ---------- */
+let seed = 7, k = 1;
+let data = ML.genWavy(seed, 90, 20);
+let query = { x: 0.5, y: 0.42 };
+let dragging = false;
+let crossings = 0, lastVote = null, kMoves = 0;
+
+/* ---------- controls ---------- */
+const kCtl = MF.sliderCard(ui.rail, {
+  id: 'k', label: 'Neighbors consulted', min: 1, max: 15, step: 2, value: 1,
+  ends: ['1 — trusts one point', '15 — asks a crowd'], bigFmt: v => 'k = ' + v
+});
+kCtl.setLocked(true, 'locked — make your prediction first (step 1)');
+kCtl.input.addEventListener('input', () => {
+  k = kCtl.value(); kCtl.sync(); kMoves++;
+  if (kMoves >= 2) quest.done('slide');
+  update();
+});
+
+MF.button(ui.rail, 'Deal me new data', 'seed ' + seed, function () {
+  seed++; this.lastChild.textContent = 'seed ' + seed;
+  data = ML.genWavy(seed, 90, 20); crossings = 0; lastVote = null;
+  update();
+  if (quest.current() === 'newdata' && metricOK) quest.done('newdata');
+});
+
+MF.legend(ui.rail, [
+  ['<span style="width:11px;height:11px;border-radius:50%;background:var(--classA);display:block"></span>', 'class A — training point'],
+  ['<span style="width:10px;height:10px;background:var(--classB);transform:rotate(45deg);display:block;margin:0 1px"></span>', 'class B — training point'],
+  ['<span style="width:10px;height:10px;border:2px solid rgba(var(--text-rgb),.7);transform:rotate(45deg);display:block;margin:0 1px"></span>', 'held-out — scored, never voted on'],
+  ['<span style="width:11px;height:11px;border-radius:50%;border:3px solid var(--live);display:block"></span>', 'your query point — drag it'],
+]);
+
+/* ---------- quest ---------- */
+const quest = MF.questCtl(ui.quest, [
+  { id: 'predict', title: 'Predict first', desc: 'When k goes up, the decision boundary gets…',
+    predict: { q: '', options: ['Smoother', 'More jagged'], answer: 0,
+      whyRight: 'Right. Asking more neighbors averages out the noisy points, so the border between colors calms down. Now prove it — the k slider just unlocked.',
+      whyWrong: 'Most people guess jagged. Actually: asking MORE neighbors averages out lone weird points, so the border calms down. The slider just unlocked — go see it with your own eyes.' } },
+  { id: 'slide', title: 'Move k and watch the border', desc: 'Slide k up and down a few times. Watch the tiny islands around noisy points appear at k=1 and melt away as k grows.' },
+  { id: 'cross', title: 'Drag your point across the border', desc: 'Grab the green-ringed point and drag it from blue territory into orange. Watch its vote flip the instant it crosses — and watch the lines to its neighbors.' },
+  { id: 'mission', title: 'Hit the mission: 95%+ held-out accuracy', desc: 'The diamonds with rings are exam questions the model never trained on. Find the k that gets the most of them right. Hint: it’s not 1 and it’s not 15.' },
+  { id: 'newdata', title: 'Prove it wasn’t luck', desc: 'Deal new data, then tune k back above 95% on the fresh dataset. If you can do it twice, you actually understand it.' },
+], {
+  onPredict(id) { kCtl.setLocked(false); update(); },
+  onAll() { showCode(); }
+});
+
+/* ---------- insights ---------- */
+const insights = MF.insights(ui.side, [
+  { id: 'read', title: 'Reading the plot', lockedHint: 'unlocks after your prediction',
+    body: 'Every dot is a labeled example. The shading is the model’s answer at every location — that’s the decision boundary, recomputed live every time anything changes.' },
+  { id: 'vote', title: 'It’s just a vote', lockedHint: 'drag the ringed point to unlock',
+    body: 'To classify a point, KNN measures the straight-line distance to every training point, keeps the k closest, and lets them vote. Majority wins. That’s the entire algorithm — no training step at all.' },
+  { id: 'k', title: 'Small k memorizes, big k generalizes', lockedHint: 'move the k slider to unlock',
+    body: 'k=1 copies whichever single point is nearest — including the noisy mistakes, hence the little islands. Big k smooths them away, but too big and it starts ignoring real local structure. Every ML model lives on this exact seesaw: it’s called the bias–variance tradeoff.' },
+  { id: 'why', title: 'Why 95% worked', lockedHint: 'hit the mission target to unlock',
+    body: 'Your best k was in the middle. Too small = the model memorized the training noise (overfitting). Too large = it blurred over the real wavy shape (underfitting). Tuning a knob on held-out data you never trained on is exactly how real ML engineers pick hyperparameters.' },
+]);
+
+/* ---------- canvas ---------- */
+const fit = MF.setupCanvas(ui.canvas, 0.66, update);
+ui.canvas.setAttribute('aria-label', 'KNN scatterplot. Drag the query point or click to move it.');
+let metricOK = false;
+
+MF.drag(ui.canvas, (type, e) => {
+  const d = fit.toData(e);
+  if (type === 'down') { dragging = true; }
+  if ((type === 'down' || type === 'move') && dragging) {
+    query.x = Math.max(0.02, Math.min(0.98, d.x));
+    query.y = Math.max(0.02, Math.min(0.98, d.y));
+    update();
+  }
+  if (type === 'up') dragging = false;
+});
+ui.canvas.addEventListener('keydown', e => {
+  const s = 0.02;
+  if (e.key === 'ArrowLeft') query.x -= s; else if (e.key === 'ArrowRight') query.x += s;
+  else if (e.key === 'ArrowUp') query.y -= s; else if (e.key === 'ArrowDown') query.y += s; else return;
+  e.preventDefault(); update();
+});
+
+function narration(acc, res) {
+  if (!quest.isDone('predict')) return 'Step 1 is on the right → commit to a guess before you get to touch anything. Scientists predict first; that’s what makes the result stick.';
+  if (k === 1) return 'k = 1: the model copies its single nearest neighbor — even the mislabeled ones. See those one-point islands? That is what “overfitting” literally looks like.';
+  if (k >= 13) return 'k = ' + k + ': now it asks such a big crowd that it steamrolls the real wavy shape. Accuracy: ' + (acc*100).toFixed(1) + '%. Too much smoothing = underfitting.';
+  return 'k = ' + k + ' → your point asks its ' + k + ' closest neighbors; ' + res.votes + ' say orange, ' + (k - res.votes) + ' say blue → it becomes ' + (res.label ? 'orange (B)' : 'blue (A)') + '. Held-out accuracy: ' + (acc*100).toFixed(1) + '%.';
+}
+
+let t0 = performance.now();
+function update() {
+  const ctx = fit.ctx, W = fit.W(), H = fit.H();
+  const A = MF.cssVar('--classA'), B = MF.cssVar('--classB'), live = MF.cssVar('--live');
+  const start = performance.now();
+  ctx.clearRect(0, 0, W, H);
+  MF.field(ctx, W, H, 76, 50, (x, y) => ML.knn(data.train, x, y, k).label, A, B, 0.17);
+  MF.gridLines(ctx, W, H);
+
+  // neighbor lines
+  const res = ML.knn(data.train, query.x, query.y, k);
+  ctx.strokeStyle = live; ctx.lineWidth = 1.5; ctx.globalAlpha = 0.8;
+  res.nn.forEach(p => { ctx.beginPath(); ctx.moveTo(query.x * W, query.y * H); ctx.lineTo(p.x * W, p.y * H); ctx.stroke(); });
+  ctx.globalAlpha = 1;
+
+  data.train.forEach(p => {
+    if (p.label === 0) MF.dot(ctx, p.x * W, p.y * H, 4.5, A);
+    else MF.diamond(ctx, p.x * W, p.y * H, 5, B);
+  });
+  // held-out: ring + red X if currently wrong
+  let ok = 0;
+  data.held.forEach(p => {
+    const pred = ML.knn(data.train, p.x, p.y, k).label;
+    const col = p.label === 0 ? A : B;
+    MF.diamond(ctx, p.x * W, p.y * H, 6, MF.cssVar('--card'), col, 2.5);
+    if (pred === p.label) ok++;
+    else {
+      ctx.strokeStyle = MF.cssVar('--bad'); ctx.lineWidth = 2;
+      const x = p.x * W, y = p.y * H;
+      ctx.beginPath(); ctx.moveTo(x - 9, y - 9); ctx.lineTo(x + 9, y + 9);
+      ctx.moveTo(x + 9, y - 9); ctx.lineTo(x - 9, y + 9); ctx.stroke();
+    }
+  });
+  // query
+  MF.dot(ctx, query.x * W, query.y * H, 8, res.label ? B : A, live, 3.5);
+
+  const acc = ok / data.held.length;
+  metricOK = ui.metric.set(acc, acc * 100, acc >= 0.95);
+  const ms = Math.max(1, Math.round(performance.now() - start));
+  document.getElementById('live-label').textContent = 'COMPUTING LIVE · ' + ms + ' ms/boundary';
+  ui.stageInfo.textContent = 'euclidean distance · majority vote · n_train = ' + data.train.length + ' · n_heldout = ' + data.held.length;
+  ui.stageExtra.textContent = 'query → class ' + (res.label ? 'B' : 'A');
+  ui.footL.textContent = 'drag the ringed point — or use arrow keys';
+  ui.footR.textContent = '× = held-out point the current k gets wrong';
+  ui.narrate.say(narration(acc, res));
+
+  // step logic
+  if (quest.isDone('predict')) insights.unlock('read');
+  if (lastVote !== null && lastVote !== res.label && dragging) {
+    crossings++;
+    if (crossings >= 1) { quest.done('cross'); insights.unlock('vote'); }
+  }
+  lastVote = res.label;
+  if (kMoves >= 2) insights.unlock('k');
+  if (metricOK && quest.current() === 'mission') { quest.done('mission'); insights.unlock('why'); }
+  if (metricOK && quest.current() === 'newdata') quest.done('newdata');
+}
+update();
+
+/* ---------- code reveal ---------- */
+function showCode() {
+  MF.codeReveal(ui.codePanel, {
+    moduleNum: 2, filename: 'knn.py',
+    intro: 'You just ran k-nearest neighbors with your hands: measure distances, take the k closest, let them vote. Here is that exact algorithm in Python — every line maps to something you did on the canvas.',
+    outro: 'Twelve lines, no libraries beyond math. sklearn’s KNeighborsClassifier does exactly this (plus speed tricks). You now know what’s inside the box.',
+    lines: [
+      { c: 'import math', n: 'We only need square roots. KNN has no training phase to import — you saw that: changing data updated the boundary instantly, nothing had to “learn”.' },
+      { c: '', n: '' },
+      { c: 'def distance(a, b):', n: 'The ruler. On the canvas, this was the length of each green line from your query point to a neighbor.' },
+      { c: '    return math.sqrt((a[0]-b[0])**2 + (a[1]-b[1])**2)', n: 'Plain Pythagoras: straight-line (Euclidean) distance between two points.' },
+      { c: '', n: '' },
+      { c: 'def knn_predict(train, query, k):', n: 'train = the colored dots. query = your green-ringed point. k = the slider you tuned to hit 95%.' },
+      { c: '    dists = [(distance(p[:2], query), p[2]) for p in train]', n: 'Measure the distance from the query to EVERY training point, remembering each point’s label. Each p is (x, y, label).' },
+      { c: '    dists.sort()', n: 'Sort nearest-first. The k at the front are the points the green lines connected to.' },
+      { c: '    nearest = dists[:k]', n: 'Keep only the k closest — the “neighbors consulted”. k=1 trusts one point; k=15 asks a crowd. You felt the difference.' },
+      { c: '    votes = sum(label for _, label in nearest)', n: 'Count the orange votes (labels are 0 or 1, so summing counts the 1s).' },
+      { c: '    return 1 if votes * 2 > k else 0', n: 'Majority wins. This one comparison IS the decision boundary — the shading was just this line evaluated at every pixel.' },
+      { c: '', n: '' },
+      { c: 'best_k = max(range(1, 16, 2), key=lambda k:', n: 'And this is your mission, automated: try every odd k from 1 to 15…' },
+      { c: '    accuracy(held_out, k))', n: '…and keep the one that scores best on held-out data. Picking hyperparameters on data the model never saw — you just did real model selection by hand.' },
+    ]
+  });
+}
+</script>
+</body>
+</html>
