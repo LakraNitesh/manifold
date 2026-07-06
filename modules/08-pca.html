@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Manifold · 08 Dimensionality Reduction</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/ml.js"></script><script src="../assets/engine.js"></script>
+</head>
+<body>
+<script>
+const ui = MF.shell({
+  num: 8, title: 'Dimensionality Reduction', sub: 'PCA · THROWING AWAY A DIMENSION SAFELY',
+  mission: 'Shape the data so one single direction keeps ≥ 95% of its spread',
+  metric: { label: 'variance kept by PC1', targetText: 'target 95', targetPct: 95, format: v => (v*100).toFixed(1)+'%' },
+  prev: { href: '07-neural.html', name: 'Neural Networks' },
+  next: { href: '09-clustering.html', name: 'Clustering' }
+});
+
+let seed = 8, tilt = 0.55, aspect = 0.55;
+let pts = ML.genCorrelated(seed, 130, tilt, aspect);
+let pca = ML.pca2(pts);
+let proj = 0; // 0 = original 2D, 1 = fully collapsed onto PC1
+let tiltStart = tilt, tiltMoved = false;
+
+/* controls */
+const projCtl = MF.sliderCard(ui.rail, {
+  id: 'proj', label: 'Project onto PC1 — squash 2D → 1D', min: 0, max: 100, step: 1, value: 0,
+  ends: ['full 2D', 'flat 1D'], bigFmt: v => v + '%'
+});
+projCtl.input.addEventListener('input', () => {
+  proj = projCtl.value() / 100; projCtl.sync();
+  if (proj >= 0.99 && quest.current() === 'collapse') { quest.done('collapse'); insights.unlock('proj'); }
+  update();
+});
+
+const tiltCtl = MF.sliderCard(ui.rail, {
+  id: 'tilt', label: 'Data tilt', min: 0, max: 157, step: 1, value: Math.round(tilt*100),
+  ends: ['0°', '90°'], bigFmt: v => Math.round(v/157*90) + '°'
+});
+tiltCtl.input.addEventListener('input', () => {
+  tilt = tiltCtl.value() / 100; tiltCtl.sync();
+  if (Math.abs(tilt - tiltStart) > 0.5) tiltMoved = true;
+  pts = ML.genCorrelated(seed, 130, tilt, aspect);
+  pca = ML.pca2(pts);
+  update();
+});
+
+const aspCtl = MF.sliderCard(ui.rail, {
+  id: 'asp', label: 'Squash — how flat the cloud is', min: 8, max: 90, step: 1, value: Math.round(aspect*100),
+  ends: ['pancake', 'round blob'], bigFmt: v => (v/100).toFixed(2)
+});
+aspCtl.input.addEventListener('input', () => {
+  aspect = aspCtl.value() / 100; aspCtl.sync();
+  pts = ML.genCorrelated(seed, 130, tilt, aspect);
+  pca = ML.pca2(pts);
+  update();
+});
+
+MF.button(ui.rail, 'Deal me new data', 'seed ' + seed, function () {
+  seed++; this.lastChild.textContent = 'seed ' + seed;
+  pts = ML.genCorrelated(seed, 130, tilt, aspect);
+  pca = ML.pca2(pts);
+  update();
+});
+
+MF.legend(ui.rail, [
+  ['<span style="width:11px;height:11px;border-radius:50%;background:var(--classA);display:block"></span>', 'a data point'],
+  ['<span style="width:14px;height:3px;background:var(--accent);display:block"></span>', 'PC1 — the direction of most spread'],
+  ['<span style="width:14px;height:3px;background:var(--warn);display:block"></span>', 'PC2 — what gets thrown away'],
+  ['<span class="mono" style="font-size:10px">·····</span>', 'a point’s path to its shadow'],
+]);
+
+/* quest */
+const quest = MF.questCtl(ui.quest, [
+  { id: 'collapse', title: 'Collapse a dimension', desc: 'Drag “Project onto PC1” to 100%. Every point slides along a dotted rail onto one line — 2 numbers per point become 1, and the cloud’s overall shape survives.' },
+  { id: 'predict', title: 'Predict: what makes a line “best”?', desc: 'To keep the most information, project onto the line that…',
+    predict: { q: '', options: ['Keeps points most spread out', 'Is closest to horizontal', 'Splits the classes'], answer: 0,
+      whyRight: 'Right. Spread = information: if the shadows stay far apart, points stay distinguishable. PCA picks the max-spread direction — no labels involved. Now tilt the data and watch PC1 chase the spread: step 3.',
+      whyWrong: 'PCA doesn’t care about horizontal, and there are no classes here at all. It wants SPREAD: if shadows stay far apart, points stay distinguishable after the squash. Tilt the data and watch PC1 chase the spread: step 3.' } },
+  { id: 'tilt', title: 'Tilt the cloud, PC1 follows', desc: 'Set projection back near 0 and drag the tilt slider around. The teal arrow re-aims instantly — PCA recomputes the max-spread direction from scratch every frame.' },
+  { id: 'mission', title: 'Make 1D almost lossless', desc: 'Crank the squash toward “pancake” until PC1 keeps ≥ 95% of the variance. Then slide projection to 100% and compare: barely anything moved. THAT is when throwing away a dimension is safe.' },
+], { onAll: showCode });
+
+const insights = MF.insights(ui.side, [
+  { id: 'proj', title: 'A projection is a shadow', lockedHint: 'collapse to 1D to unlock',
+    body: 'Each point slides perpendicularly onto the line — its shadow. The dotted rail is the information you lose: the shorter the rails, the less the squash cost. PCA is just choosing the flashlight angle that makes the most faithful shadows.' },
+  { id: 'var', title: 'Variance = information kept', lockedHint: 'watch PC1 chase the tilt to unlock',
+    body: 'The spread along PC1 divided by total spread is “variance explained” — your mission bar. Real datasets have hundreds of dimensions; you keep the top handful of PCs and routinely save 95% of the variance with 5% of the numbers. Compression, denoising and visualization all fall out of this one trick.' },
+  { id: 'tsne', title: 'Where t-SNE and UMAP fit', lockedHint: 'hit 95% to unlock',
+    body: 'PCA is a straight flashlight — fast, exact, but it can only shadow along a line. t-SNE and UMAP instead ask “keep neighbors together” and are allowed to bend space to do it. Great for seeing cluster structure in 2D maps; useless for reconstructing data. Rule of thumb: PCA to compress, t-SNE/UMAP to look.' },
+]);
+
+const fit = MF.setupCanvas(ui.canvas, 0.66, update);
+
+function update() {
+  const ctx = fit.ctx, W = fit.W(), H = fit.H();
+  const A = MF.cssVar('--classA');
+  ctx.clearRect(0,0,W,H);
+  MF.gridLines(ctx, W, H);
+
+  // PC axes through the mean, scaled by sqrt(eigenvalue)
+  const cx = pca.mx*W, cy = pca.my*H;
+  const s1 = Math.sqrt(pca.l1)*2.4, s2 = Math.sqrt(pca.l2)*2.4;
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = MF.cssVar('--accent');
+  ctx.beginPath(); ctx.moveTo(cx - pca.vx*s1*W, cy - pca.vy*s1*H); ctx.lineTo(cx + pca.vx*s1*W, cy + pca.vy*s1*H); ctx.stroke();
+  ctx.strokeStyle = MF.cssVar('--warn'); ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.moveTo(cx - pca.vx2*s2*W, cy - pca.vy2*s2*H); ctx.lineTo(cx + pca.vx2*s2*W, cy + pca.vy2*s2*H); ctx.stroke();
+
+  pts.forEach(p => {
+    // shadow on PC1
+    const dx = p.x - pca.mx, dy = p.y - pca.my;
+    const t = dx*pca.vx + dy*pca.vy;
+    const sx = pca.mx + t*pca.vx, sy = pca.my + t*pca.vy;
+    const x = p.x + (sx - p.x)*proj, y = p.y + (sy - p.y)*proj;
+    if (proj > 0.02 && proj < 0.98) {
+      ctx.strokeStyle = 'rgba(' + MF.cssVar('--text-rgb') + ',0.25)';
+      ctx.setLineDash([2,3]); ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(x*W, y*H); ctx.lineTo(sx*W, sy*H); ctx.stroke(); ctx.setLineDash([]);
+    }
+    MF.dot(ctx, x*W, y*H, 4, A);
+  });
+
+  const ok = ui.metric.set(pca.varExplained, pca.varExplained*100, pca.varExplained >= 0.95);
+  ui.stageInfo.textContent = 'pca on ' + pts.length + ' points · eigenvalues λ1=' + (pca.l1*1000).toFixed(1) + ' λ2=' + (pca.l2*1000).toFixed(1) + ' (×10³)';
+  ui.stageExtra.textContent = 'projection ' + Math.round(proj*100) + '%';
+  ui.footL.textContent = 'teal = PC1 (kept) · amber = PC2 (thrown away)';
+  ui.footR.textContent = 'arrow lengths = how much spread lives in each direction';
+  const ve = (pca.varExplained*100).toFixed(1);
+  if (proj >= 0.99) ui.narrate.say('Fully collapsed: every point is now ONE number (its position along PC1). ' + ve + '% of the original spread survived the squash.');
+  else if (proj > 0.02) ui.narrate.say('Mid-squash: the dotted rails show exactly what each point loses — its PC2 coordinate. Currently keeping ' + ve + '% of the variance.');
+  else ui.narrate.say('PC1 (teal) points along the cloud’s longest stretch; PC2 (amber) is what’s left. Right now PC1 holds ' + ve + '% of all the spread. Recomputed live as you drag.');
+
+  if (tiltMoved && quest.current()==='tilt') { quest.done('tilt'); insights.unlock('var'); }
+  if (ok && quest.current()==='mission') { quest.done('mission'); insights.unlock('tsne'); }
+}
+update();
+
+function showCode() {
+  MF.codeReveal(ui.codePanel, {
+    moduleNum: 8, filename: 'pca.py',
+    intro: 'You aimed a flashlight at a cloud and found the angle whose shadow loses the least. That angle has a closed-form answer — no training loop at all.',
+    outro: 'On real data X has hundreds of columns; you keep the top k eigenvectors and compress hundreds of numbers per row into k, usually keeping 90%+ of the variance. Same six lines.',
+    lines: [
+      { c: 'import numpy as np', n: 'PCA is pure linear algebra — numpy IS the algorithm here.' },
+      { c: '', n: '' },
+      { c: 'X = X - X.mean(axis=0)', n: 'Center the cloud on the origin. The arrows on your canvas always grew from the mean — this line is why.' },
+      { c: '', n: '' },
+      { c: 'C = np.cov(X.T)', n: 'The covariance matrix: how much each dimension spreads, and how much they move TOGETHER. Your tilt slider was literally editing this matrix.' },
+      { c: '', n: '' },
+      { c: 'eigvals, eigvecs = np.linalg.eigh(C)', n: 'The punchline: the directions of pure spread are the eigenvectors of C, and each eigenvalue says how much spread lives there. The teal and amber arrows — lengths included — came straight out of this call.' },
+      { c: '', n: '' },
+      { c: 'pc1 = eigvecs[:, -1]', n: 'Biggest eigenvalue = PC1, the teal arrow. When you tilted the data, this vector chased the spread instantly — no iterations, it’s an exact solve.' },
+      { c: '', n: '' },
+      { c: 'shadow = X @ pc1', n: 'The projection slider at 100%: each point becomes a single number, its coordinate along PC1. n×2 data just became n×1.' },
+      { c: '', n: '' },
+      { c: 'kept = eigvals[-1] / eigvals.sum()', n: 'Variance explained — your mission bar. You engineered the data until this fraction hit 0.95; real pipelines pick how many PCs to keep by exactly this number.' },
+    ]
+  });
+}
+</script>
+</body>
+</html>

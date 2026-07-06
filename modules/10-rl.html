@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Manifold · 10 Reinforcement Learning</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/ml.js"></script><script src="../assets/engine.js"></script>
+</head>
+<body>
+<script>
+const ui = MF.shell({
+  num: 10, title: 'Reinforcement Learning', sub: 'Q-LEARNING · LEARNING FROM CONSEQUENCES',
+  mission: 'Train the agent, then pass the exam: reach the goal greedily in ≤ 12 moves',
+  metric: { label: 'last greedy run (moves)', targetText: 'target ≤ 12', targetPct: 40, format: v => v === null ? '—' : v + ' moves' },
+  prev: { href: '09-clustering.html', name: 'Clustering' }
+});
+
+const grid = ML.makeGrid(6);
+let Q = {};
+let agent = { ...grid.start };
+let epsilon = 0.3, episodes = 0, moves = 0;
+let training = false, examMode = false, examMoves = 0, lastExam = null;
+const rng = ML.rand(2026);
+let stuckCounter = 0;
+
+/* controls */
+const epsCtl = MF.sliderCard(ui.rail, {
+  id: 'eps', label: 'ε — curiosity (chance of a random move)', min: 0, max: 100, step: 1, value: 30,
+  ends: ['0 — pure habit', '1 — pure chaos'], bigFmt: v => 'ε = ' + (v/100).toFixed(2)
+});
+epsCtl.input.addEventListener('input', () => { epsilon = epsCtl.value()/100; epsCtl.sync(); });
+
+const spdCtl = MF.sliderCard(ui.rail, {
+  id: 'spd', label: 'Speed', min: 1, max: 60, step: 1, value: 18,
+  ends: ['watchable', 'ludicrous'], bigFmt: v => v + '×'
+});
+spdCtl.input.addEventListener('input', () => spdCtl.sync());
+
+const trainBtn = MF.button(ui.rail, 'Start training ▸', '', () => {
+  training = !training; examMode = false;
+  trainBtn.firstChild.textContent = training ? 'Pause training ⏸' : 'Resume training ▸';
+  trainBtn.classList.toggle('on', training);
+});
+MF.button(ui.rail, 'Exam: one greedy run (ε = 0)', 'no random moves', () => {
+  examMode = true; training = false; examMoves = 0;
+  agent = { ...grid.start };
+  trainBtn.firstChild.textContent = 'Resume training ▸'; trainBtn.classList.remove('on');
+});
+MF.button(ui.rail, 'Wipe the agent’s memory', 'Q ← 0', () => {
+  Q = {}; episodes = 0; agent = { ...grid.start }; lastExam = null;
+  MF.toast('MEMORY WIPED', 'Every cell is worthless again. Retrain from zero.');
+});
+
+MF.legend(ui.rail, [
+  ['<span style="width:12px;height:12px;background:rgba(47,191,119,.8);border-radius:3px;display:block"></span>', 'G — the goal (+10)'],
+  ['<span style="width:12px;height:12px;background:rgba(140,150,165,.55);border-radius:3px;display:block"></span>', 'wall — can’t enter'],
+  ['<span style="width:11px;height:11px;border-radius:50%;background:var(--classB);display:block"></span>', 'the agent'],
+  ['<span class="mono" style="font-size:12px">→</span>', 'arrow = best known move from that cell'],
+]);
+
+/* quest */
+const quest = MF.questCtl(ui.quest, [
+  { id: 'train20', title: 'Train for 20 episodes', desc: 'Press Start training. The agent knows NOTHING — not where the goal is, not what walls are. It only feels −0.1 per step and +10 at the goal. Watch value (green glow) leak backwards from the goal.' },
+  { id: 'predict', title: 'Predict: ε = 0 from birth', desc: 'If the agent never explored (ε = 0 from the very start), it would…',
+    predict: { q: '', options: ['Find the best path faster', 'Get stuck on the first okay-ish path'], answer: 1,
+      whyRight: 'Right — with no random moves it re-walks the first path that ever paid out, never discovering shortcuts. Exploration vs exploitation is THE dilemma of RL. Now examine what your agent actually learned: step 3.',
+      whyWrong: 'It feels efficient, but with zero randomness the agent re-walks the first path that ever paid out — forever — never discovering shortcuts. You need some ε early on. Now examine what it actually learned: step 3.' } },
+  { id: 'exam', title: 'Run the exam', desc: 'Press “Exam: one greedy run”. ε drops to 0 and the agent follows its arrows, pure habit. It should reach the goal — if it wanders, train more episodes first.' },
+  { id: 'mission', title: 'Pass with ≤ 12 moves', desc: 'The shortest legal path is 10 moves. Train more (keep some ε!), then exam again until a greedy run takes 12 moves or fewer.' },
+], { onAll: showCode });
+
+const insights = MF.insights(ui.side, [
+  { id: 'q', title: 'The Q-table is the whole brain', lockedHint: 'train 20 episodes to unlock',
+    body: 'Q[cell][move] = “how good is this move from this cell, counting all future reward?” — one number per arrow. Every green glow you see is a cell whose best Q rose above zero. There is no map, no plan, no picture of the maze: just this table of learned habits.' },
+  { id: 'prop', title: 'Value flows backwards', lockedHint: 'pass one exam to unlock',
+    body: 'Only the goal pays +10, so at first only the cell next to the goal learns anything. But the update rule shares value with the cell BEFORE it, then the one before that — each episode the glow creeps one step further from the goal. Delayed rewards reaching backwards through time: that’s the core magic of RL.' },
+  { id: 'rl', title: 'From grid world to game world', lockedHint: 'pass the mission to unlock',
+    body: 'Swap the 36-cell table for a neural network that ESTIMATES Q from raw pixels and you have DQN — the system that learned Atari from scratch. Add self-play and search: AlphaGo. Use human thumbs-up as reward on text: RLHF, which fine-tuned the chatbots you use. Same loop you just watched: act, feel, update.' },
+]);
+
+/* canvas */
+const fit = MF.setupCanvas(ui.canvas, 0.66, () => {});
+const S = grid.size;
+const key = s => s.x + ',' + s.y;
+
+function bestQ(x, y) {
+  const q = Q[x + ',' + y];
+  return q ? Math.max(...q) : 0;
+}
+
+function doMove(eps) {
+  const res = ML.qlearnStep(grid, Q, agent, eps, 0.3, 0.9, rng);
+  const wasGoal = res.done;
+  agent = res.next;
+  moves++;
+  return wasGoal;
+}
+
+function narration() {
+  if (episodes === 0 && !training) return 'A 6×6 world. The agent starts bottom-left, the goal pays +10 top-right, every step costs −0.1. It has no eyes — only the ability to move and feel reward. Press Start training.';
+  if (examMode) return 'EXAM (ε = 0): pure habit, no dice. The agent follows its arrows. ' + examMoves + ' moves so far — the shortest possible is 10.';
+  if (training && episodes < 5) return 'Episode ' + episodes + ': mostly random stumbling (ε = ' + epsilon.toFixed(2) + '). It hasn’t felt the +10 often enough to form habits yet.';
+  if (training) return 'Episode ' + episodes + ' · ε = ' + epsilon.toFixed(2) + '. Watch the green value-glow crawl backwards from the goal, one cell per generation — and the arrows organize into a river flowing toward G.';
+  return lastExam !== null ? 'Last exam: ' + lastExam + ' moves. Train more with some ε, then exam again.' : 'Training paused at episode ' + episodes + '.';
+}
+
+let frame = 0;
+(function loop() {
+  const spd = spdCtl.value();
+  if (training) {
+    for (let i = 0; i < spd; i++) {
+      if (doMove(epsilon)) {
+        episodes++;
+        if (episodes >= 20 && quest.current() === 'train20') { quest.done('train20'); insights.unlock('q'); }
+      }
+    }
+  } else if (examMode && frame % Math.max(1, Math.round(8 - spd/10)) === 0) {
+    const done = doMove(0);
+    examMoves++;
+    if (done) {
+      lastExam = examMoves;
+      examMode = false;
+      const ok = examMoves <= 12;
+      MF.toast(ok ? 'EXAM PASSED' : 'EXAM FINISHED', examMoves + ' moves. ' + (ok ? 'Habit = optimal.' : 'Shortest is 10 — train more.'));
+      if (quest.current() === 'exam') { quest.done('exam'); insights.unlock('prop'); }
+      if (ok && quest.current() === 'mission') { quest.done('mission'); insights.unlock('rl'); }
+    }
+    if (examMoves > 80) { examMode = false; lastExam = examMoves; MF.toast('LOST', 'It wandered 80+ moves. It needs more training (with some ε).'); }
+  }
+  render();
+  frame++;
+  requestAnimationFrame(loop);
+})();
+
+function render() {
+  const ctx = fit.ctx, W = fit.W(), H = fit.H();
+  ctx.clearRect(0,0,W,H);
+  const cw = W/S, ch = H/S;
+  const maxQ = Math.max(0.5, ...Object.values(Q).map(q => Math.max(...q)));
+  for (let x = 0; x < S; x++) for (let y = 0; y < S; y++) {
+    const isWall = grid.walls.some(w => w.x===x && w.y===y);
+    const isGoal = grid.goal.x===x && grid.goal.y===y;
+    if (isWall) ctx.fillStyle = 'rgba(140,150,165,0.45)';
+    else if (isGoal) ctx.fillStyle = 'rgba(47,191,119,0.75)';
+    else {
+      const v = Math.max(0, bestQ(x,y)) / maxQ;
+      ctx.fillStyle = 'rgba(47,191,119,' + (v*0.4).toFixed(3) + ')';
+    }
+    ctx.fillRect(x*cw+2, y*ch+2, cw-4, ch-4);
+    ctx.strokeStyle = 'rgba(' + MF.cssVar('--text-rgb') + ',0.12)';
+    ctx.strokeRect(x*cw+2, y*ch+2, cw-4, ch-4);
+    // policy arrow
+    const q = Q[x + ',' + y];
+    if (q && !isWall && !isGoal && Math.max(...q) > 0.01) {
+      const a = q.indexOf(Math.max(...q));
+      const dirs = ['↑','↓','←','→'];
+      ctx.fillStyle = 'rgba(' + MF.cssVar('--text-rgb') + ',0.75)';
+      ctx.font = Math.round(ch*0.34) + 'px IBM Plex Mono';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(dirs[a], (x+0.5)*cw, (y+0.52)*ch);
+    }
+    if (isGoal) {
+      ctx.fillStyle = '#fff';
+      ctx.font = '700 ' + Math.round(ch*0.4) + 'px Space Grotesk';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('G', (x+0.5)*cw, (y+0.53)*ch);
+    }
+  }
+  // agent
+  MF.dot(ctx, (agent.x+0.5)*cw, (agent.y+0.5)*ch, Math.min(cw,ch)*0.22, MF.cssVar('--classB'), MF.cssVar('--card'), 3);
+
+  ui.metric.set(lastExam, lastExam === null ? 0 : Math.max(5, 100 - (lastExam-10)*8), lastExam !== null && lastExam <= 12);
+  ui.stageInfo.textContent = 'q-learning · α=0.3 γ=0.9 · reward: goal +10, step −0.1';
+  ui.stageExtra.textContent = 'episode ' + episodes + (examMode ? ' · EXAM' : '');
+  ui.footL.textContent = 'green glow = learned value · arrows = current best habit';
+  ui.footR.textContent = 'the agent never sees this map — only rewards';
+  ui.narrate.say(narration());
+}
+
+function showCode() {
+  MF.codeReveal(ui.codePanel, {
+    moduleNum: 10, filename: 'q_learning.py',
+    intro: 'You raised an agent from random stumbling to a 12-move habit using nothing but +10 and −0.1. Here is its entire brain and the rule that trained it.',
+    outro: 'That update line, scaled up with a neural net guessing Q, is DQN (Atari). With human feedback as the reward signal, it becomes RLHF. You’ve now touched every core idea in the curriculum — go build something.',
+    lines: [
+      { c: 'Q = defaultdict(lambda: [0.0]*4)', n: 'The whole brain: for each cell, four numbers — the learned value of up/down/left/right. The arrows and green glow were this table, drawn.' },
+      { c: 'alpha, gamma, eps = 0.3, 0.9, 0.3', n: 'Learning rate (how fast beliefs update), discount (how much the future matters), and YOUR ε slider — the curiosity dial.' },
+      { c: '', n: '' },
+      { c: 'for episode in range(500):', n: 'One episode = birth at start, walk until the goal. You watched hundreds of these.' },
+      { c: '    s = start', n: '' },
+      { c: '    while s != goal:', n: '' },
+      { c: '        if random.random() < eps:', n: 'The exploration coin-flip. You predicted what happens without it: stuck on the first okay-ish path forever.' },
+      { c: '            a = random.randrange(4)', n: 'Curiosity: try something random. Wasteful now, priceless later.' },
+      { c: '        else:', n: '' },
+      { c: '            a = argmax(Q[s])', n: 'Habit: the best-known move. The exam button set eps=0, making the agent run on pure argmax.' },
+      { c: '        s2, r = env.step(s, a)', n: 'Act, and FEEL the consequence: −0.1 for a step, +10 at the goal. This is the only information the agent ever receives.' },
+      { c: '        Q[s][a] += alpha * (r + gamma*max(Q[s2]) - Q[s][a])', n: 'THE update — the one line of RL. “What I believed” gets pulled toward “what I just felt, plus the value of where I landed”. Because s2’s value is in the formula, reward leaks one cell backwards per visit — the crawling glow you watched.' },
+      { c: '        s = s2', n: '' },
+    ]
+  });
+}
+</script>
+</body>
+</html>

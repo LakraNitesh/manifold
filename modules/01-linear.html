@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Manifold · 01 Linear Decision Boundaries</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/ml.js"></script><script src="../assets/engine.js"></script>
+</head>
+<body>
+<script>
+const ui = MF.shell({
+  num: 1, title: 'Linear Decision Boundaries', sub: 'LOGISTIC REGRESSION · YOU vs GRADIENT DESCENT',
+  mission: 'Separate the classes: beat 80% by hand, then let the machine beat you',
+  metric: { label: 'accuracy of current line', targetText: 'machine target 92', targetPct: 92, format: v => (v*100).toFixed(1)+'%' },
+  next: { href: '02-knn.html', name: 'Distance-Based Learning' }
+});
+
+/* ---------- state ---------- */
+let seed = 3;
+let pts = ML.genLinear(seed, 80);
+// two draggable handles define the human's line
+let hA = { x: 0.5, y: 0.15 }, hB = { x: 0.5, y: 0.85 };
+let mode = 'hand';                 // 'hand' | 'machine'
+let w = { x: 0, y: 0, b: 0 };      // machine weights
+let training = false, trainT = 0;
+let lossHist = [];
+let humanBest = 0, grab = null;
+
+function handleWeights() {
+  // normal to the segment A→B, best orientation chosen automatically
+  const dx = hB.x - hA.x, dy = hB.y - hA.y;
+  const n = { x: dy, y: -dx };
+  const b = -(n.x * hA.x + n.y * hA.y);
+  const w1 = { x: n.x, y: n.y, b }, w2 = { x: -n.x, y: -n.y, b: -b };
+  return ML.accuracy(pts, (x, y) => ML.linPredict(w1, x, y)) >= ML.accuracy(pts, (x, y) => ML.linPredict(w2, x, y)) ? w1 : w2;
+}
+function currentPredictor() {
+  const ww = mode === 'hand' ? handleWeights() : w;
+  return { ww, fn: (x, y) => ML.linPredict(ww, x, y) };
+}
+
+/* ---------- controls ---------- */
+const lrCtl = MF.sliderCard(ui.rail, {
+  id: 'lr', label: 'Learning rate (machine only)', min: -2, max: 1.2, step: 0.1, value: 0.5,
+  ends: ['0.01 — tiny careful steps', '16 — reckless leaps'], bigFmt: v => 'η = ' + Math.pow(10, v).toFixed(2)
+});
+lrCtl.input.addEventListener('input', () => lrCtl.sync());
+
+const trainBtn = MF.button(ui.rail, 'Let the machine try ▸', 'gradient descent', () => {
+  if (quest.current() === 'hand') { MF.toast('NOT YET', 'Beat 80% by hand first — step 1.'); return; }
+  mode = 'machine'; training = !training;
+  trainBtn.firstChild.textContent = training ? 'Pause training ⏸' : 'Resume training ▸';
+  trainBtn.classList.toggle('on', training);
+  if (training && trainT === 0) { w = { ...handleWeights() }; scaleDown(w); lossHist = []; }
+});
+function scaleDown(w){ const m = Math.max(1, Math.hypot(w.x, w.y)); w.x/=m; w.y/=m; w.b/=m; }
+
+MF.button(ui.rail, 'Deal me new data', 'seed ' + seed, function () {
+  seed++; this.lastChild.textContent = 'seed ' + seed;
+  pts = ML.genLinear(seed, 80);
+  if (quest.current() === 'rematch') {
+    w = { x: 0, y: 0, b: 0 }; trainT = 0; lossHist = []; mode = 'machine'; training = true;
+    trainBtn.firstChild.textContent = 'Pause training ⏸'; trainBtn.classList.add('on');
+  }
+  update();
+});
+
+// loss sparkline card
+const sparkCard = document.createElement('div');
+sparkCard.className = 'card card-pad';
+sparkCard.innerHTML = '<span class="label">Loss — how wrong the machine is</span><canvas id="spark" style="width:100%;height:64px;margin-top:8px;cursor:default"></canvas><span class="hint" id="spark-hint">waiting for training…</span>';
+ui.rail.appendChild(sparkCard);
+const spark = document.getElementById('spark');
+const sparkFit = MF.setupCanvas(spark, 0.24, drawSpark);
+
+MF.legend(ui.rail, [
+  ['<span style="width:11px;height:11px;border-radius:50%;background:var(--classA);display:block"></span>', 'class A'],
+  ['<span style="width:10px;height:10px;background:var(--classB);transform:rotate(45deg);display:block;margin:0 1px"></span>', 'class B'],
+  ['<span style="width:12px;height:12px;border-radius:50%;border:3px solid var(--accent);display:block"></span>', 'your line handles — drag them'],
+]);
+
+/* ---------- quest ---------- */
+const quest = MF.questCtl(ui.quest, [
+  { id: 'hand', title: 'You first: separate them by hand', desc: 'Drag the two ringed handles to aim the line. Get accuracy above 80%. Every point on the wrong side costs you.' },
+  { id: 'predict', title: 'Predict: how does the machine aim?', desc: 'When you press train, the machine improves the line by…',
+    predict: { q: '', options: ['Trying random lines', 'Following the error downhill', 'Testing every possible line'], answer: 1,
+      whyRight: 'Exactly — gradient descent. It measures which tiny nudge of the line reduces the error, takes that step, and repeats. Press “Let the machine try”.',
+      whyWrong: 'It never guesses and it can’t try every line (there are infinitely many). It computes which tiny nudge reduces the error and steps that way — “gradient descent”, literally: follow the slope down. Press “Let the machine try”.' } },
+  { id: 'machine', title: 'Watch it learn — reach 92%', desc: 'Start training and watch the line rotate into place while the loss curve falls. It starts from YOUR line, then out-tunes you.' },
+  { id: 'lr', title: 'Break it: crank the learning rate', desc: 'Push η above ~8 while training. Watch the line thrash and the loss curve go spiky — steps so big it leaps across the valley instead of walking down it. Then bring η back down and let it settle to 92%+.' },
+  { id: 'rematch', title: 'Rematch on fresh data', desc: 'Deal new data — the machine retrains from scratch, no hands needed. Watch it reach 92% on data neither of you has seen.' },
+], { onAll: showCode });
+
+/* ---------- insights ---------- */
+const insights = MF.insights(ui.side, [
+  { id: 'line', title: 'A line IS a model', lockedHint: 'beat 80% by hand to unlock',
+    body: 'Your line is three numbers: w₁, w₂ (its tilt) and b (its shift). Classify a point = check which side it’s on: w₁x + w₂y + b > 0. When people say a model “has weights”, they mean exactly these numbers — bigger models just have more of them.' },
+  { id: 'gd', title: 'Gradient descent', lockedHint: 'let the machine train to unlock',
+    body: 'Loss = a single number measuring total wrongness. The gradient says which way loss increases fastest — so the machine steps the opposite way. Small step, re-measure, repeat. That loop trains everything from this line to GPT.' },
+  { id: 'lri', title: 'The learning rate seesaw', lockedHint: 'break it with a huge η to unlock',
+    body: 'η too small: converges, but takes forever. η too big: each step overshoots the valley and the loss explodes — you saw the thrashing. Real training runs fail for this exact reason, which is why η is the first knob engineers reach for.' },
+]);
+
+/* ---------- canvas ---------- */
+const fit = MF.setupCanvas(ui.canvas, 0.66, update);
+ui.canvas.setAttribute('aria-label', 'Scatterplot with a draggable separating line.');
+
+MF.drag(ui.canvas, (type, e) => {
+  const d = fit.toData(e);
+  if (type === 'down' && mode === 'hand') {
+    const dist = h => Math.hypot(h.x - d.x, h.y - d.y);
+    grab = dist(hA) < 0.07 ? hA : (dist(hB) < 0.07 ? hB : null);
+  }
+  if (type === 'move' && grab) {
+    grab.x = Math.max(0.02, Math.min(0.98, d.x));
+    grab.y = Math.max(0.02, Math.min(0.98, d.y));
+    update();
+  }
+  if (type === 'up') grab = null;
+});
+
+function drawLine(ctx, W, H, ww, color, width) {
+  // draw w·p + b = 0 across the canvas
+  const f = (x, y) => ww.x * x + ww.y * y + ww.b;
+  const ptsOn = [];
+  const edges = [[0,0,1,0],[1,0,1,1],[1,1,0,1],[0,1,0,0]];
+  edges.forEach(([x1,y1,x2,y2]) => {
+    const v1 = f(x1,y1), v2 = f(x2,y2);
+    if ((v1 <= 0) !== (v2 <= 0)) {
+      const t = v1 / (v1 - v2);
+      ptsOn.push([x1 + (x2-x1)*t, y1 + (y2-y1)*t]);
+    }
+  });
+  if (ptsOn.length >= 2) {
+    ctx.strokeStyle = color; ctx.lineWidth = width;
+    ctx.beginPath(); ctx.moveTo(ptsOn[0][0]*W, ptsOn[0][1]*H); ctx.lineTo(ptsOn[1][0]*W, ptsOn[1][1]*H); ctx.stroke();
+  }
+}
+
+let lastLoss = null, spikeSeen = false;
+function narration(acc) {
+  if (mode === 'hand') {
+    if (acc >= 0.8) return 'Nice — ' + (acc*100).toFixed(1) + '% by hand. But notice the noisy points near the middle: no straight line gets them all. Now predict how the machine will do it (step 2).';
+    return 'Your line: ' + (acc*100).toFixed(1) + '% correct. Drag the ringed handles — every point shaded the wrong color is one you’re getting wrong.';
+  }
+  const lr = Math.pow(10, lrCtl.value());
+  if (spikeSeen && lr > 6) return 'η = ' + lr.toFixed(1) + ': the step size is bigger than the valley. Each update leaps PAST the answer — loss is bouncing, not falling. This is what a diverging training run looks like.';
+  if (training) return 'Training: step ' + trainT + ' · loss ' + (lossHist.at(-1)?.toFixed(3) ?? '—') + ' · the line rotates a tiny bit each step, always in the direction that reduces total error.';
+  return 'Paused at ' + (acc*100).toFixed(1) + '%. Resume training or tweak η.';
+}
+
+function drawSpark() {
+  const ctx = sparkFit.ctx, W = sparkFit.W(), H = sparkFit.H();
+  ctx.clearRect(0,0,W,H);
+  if (lossHist.length < 2) return;
+  const mx = Math.max(...lossHist), mn = Math.min(...lossHist);
+  ctx.strokeStyle = MF.cssVar('--accent'); ctx.lineWidth = 2;
+  ctx.beginPath();
+  lossHist.forEach((l, i) => {
+    const x = i / (lossHist.length - 1) * W;
+    const y = H - ((l - mn) / (mx - mn + 1e-9)) * (H - 6) - 3;
+    i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+  });
+  ctx.stroke();
+  document.getElementById('spark-hint').textContent = 'loss ' + (lossHist.at(-1)).toFixed(3) + ' · ' + trainT + ' steps' + (spikeSeen ? ' · spikes = overshooting' : '');
+}
+
+function update() {
+  const ctx = fit.ctx, W = fit.W(), H = fit.H();
+  const A = MF.cssVar('--classA'), B = MF.cssVar('--classB'), acc2 = MF.cssVar('--accent');
+  ctx.clearRect(0, 0, W, H);
+  const { ww, fn } = currentPredictor();
+  MF.field(ctx, W, H, 76, 50, fn, A, B, 0.15);
+  MF.gridLines(ctx, W, H);
+  pts.forEach(p => {
+    const wrong = fn(p.x, p.y) !== p.label;
+    if (p.label === 0) MF.dot(ctx, p.x*W, p.y*H, 4.5, A, wrong ? MF.cssVar('--bad') : null, 2);
+    else MF.diamond(ctx, p.x*W, p.y*H, 5, B, wrong ? MF.cssVar('--bad') : null, 2);
+  });
+  drawLine(ctx, W, H, ww, mode==='hand' ? acc2 : MF.cssVar('--live'), 3);
+  if (mode === 'hand') {
+    [hA, hB].forEach(h => MF.dot(ctx, h.x*W, h.y*H, 9, MF.cssVar('--card'), acc2, 3.5));
+  }
+  const acc = ML.accuracy(pts, fn);
+  const ok = ui.metric.set(acc, acc*100, mode==='machine' && acc >= 0.92);
+
+  ui.stageInfo.textContent = (mode==='hand' ? 'your line' : 'machine’s line') + ' · w₁=' + ww.x.toFixed(2) + ' w₂=' + ww.y.toFixed(2) + ' b=' + ww.b.toFixed(2);
+  ui.stageExtra.textContent = mode==='hand' ? 'red ring = misclassified' : 'gradient descent · step ' + trainT;
+  ui.footL.textContent = mode==='hand' ? 'drag the two ringed handles to aim your line' : 'the machine took over your line and is tuning it';
+  ui.footR.textContent = 'shading = the model’s answer everywhere';
+  ui.narrate.say(narration(acc));
+
+  if (mode === 'hand' && acc >= 0.8) { humanBest = Math.max(humanBest, acc); quest.done('hand'); insights.unlock('line'); }
+  if (ok && quest.current() === 'machine') { quest.done('machine'); insights.unlock('gd'); }
+  if (spikeSeen && ok && quest.current() === 'lr') { quest.done('lr'); insights.unlock('lri'); }
+  if (ok && quest.current() === 'rematch') quest.done('rematch');
+}
+
+/* training loop */
+(function loop() {
+  if (training) {
+    const lr = Math.pow(10, lrCtl.value());
+    for (let i = 0; i < 4; i++) { w = ML.logregStep(pts, w, lr); trainT++; }
+    const L = ML.logregLoss(pts, w);
+    if (lastLoss !== null && L > lastLoss * 1.15 && Math.pow(10, lrCtl.value()) > 6) spikeSeen = true;
+    lastLoss = L;
+    lossHist.push(L); if (lossHist.length > 160) lossHist.shift();
+    drawSpark(); update();
+  }
+  requestAnimationFrame(loop);
+})();
+update();
+
+/* ---------- code reveal ---------- */
+function showCode() {
+  MF.codeReveal(ui.codePanel, {
+    moduleNum: 1, filename: 'logistic_regression.py',
+    intro: 'You aimed a line by hand; the machine aimed it with gradient descent. Here is that machine — the same loop that trains neural networks, just with 3 weights instead of billions.',
+    outro: 'That loop — predict, measure error, nudge weights downhill, repeat — is 90% of modern machine learning. Everything after this module is variations on it.',
+    lines: [
+      { c: 'import math', n: 'The sigmoid needs exp(). That’s all we import — the “learning” is just arithmetic.' },
+      { c: '', n: '' },
+      { c: 'w1, w2, b = 0.0, 0.0, 0.0   # the line, as 3 numbers', n: 'Your draggable line, seen by the computer: tilt (w1, w2) and shift (b). Dragging handles = editing these numbers.' },
+      { c: 'lr = 0.5                     # learning rate', n: 'The η slider. You saw what happens when this is huge: every step overshoots and loss goes spiky.' },
+      { c: '', n: '' },
+      { c: 'def predict(x, y):', n: 'Which side of the line is this point on — and how confidently?' },
+      { c: '    z = w1*x + w2*y + b', n: 'Positive z = one side, negative = the other. z=0 is exactly ON the line you were dragging.' },
+      { c: '    return 1 / (1 + math.exp(-z))', n: 'Sigmoid squashes z into a probability between 0 and 1. That’s the “logistic” in logistic regression.' },
+      { c: '', n: '' },
+      { c: 'for step in range(1000):', n: 'The training loop you watched — each frame on screen ran a few of these.' },
+      { c: '    g1 = g2 = gb = 0.0', n: 'We’ll accumulate the gradient: “which way should each weight move to reduce error?”' },
+      { c: '    for x, y, label in data:', n: 'Look at every training point (every dot on your canvas)…' },
+      { c: '        err = predict(x, y) - label', n: '…and measure how wrong we are on it. err > 0 means we guessed too orange, err < 0 too blue.' },
+      { c: '        g1 += err*x; g2 += err*y; gb += err', n: 'Each point pulls the line toward classifying it correctly. Misclassified points pull hardest — the red-ringed ones did most of the aiming.' },
+      { c: '    n = len(data)', n: '' },
+      { c: '    w1 -= lr*g1/n; w2 -= lr*g2/n; b -= lr*gb/n', n: 'THE step: move every weight a little bit downhill on the loss. This single line is gradient descent. You watched it rotate your line into place.' },
+    ]
+  });
+}
+</script>
+</body>
+</html>

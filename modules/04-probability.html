@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Manifold · 04 Probability</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/ml.js"></script><script src="../assets/engine.js"></script>
+</head>
+<body>
+<script>
+const ui = MF.shell({
+  num: 4, title: 'Probability', sub: 'GAUSSIAN NAIVE BAYES · BELIEF AS A NUMBER',
+  mission: 'Find the model’s point of maximum doubt — park the probe at 50/50',
+  metric: { label: 'model’s doubt (100 = torn)', targetText: 'target 97+', targetPct: 97, format: v => v.toFixed(1) },
+  prev: { href: '03-trees.html', name: 'Tree Learning' },
+  next: { href: '05-svm.html', name: 'Margin-Based Methods' }
+});
+
+let seed = 5, spreadA = 0.16;
+let pts = ML.genBlobs(seed, 90, spreadA, 0.13);
+let nb = ML.fitGaussianNB(pts);
+let probe = { x: 0.5, y: 0.5 };
+let dragging = false, spreadMoves = 0;
+
+/* controls */
+const spCtl = MF.sliderCard(ui.rail, {
+  id: 'spread', label: 'Class A spread — how messy blue is', min: 0.08, max: 0.30, step: 0.01, value: spreadA,
+  ends: ['tight cluster', 'sprawling mess'], bigFmt: v => 'σ ≈ ' + Number(v).toFixed(2)
+});
+spCtl.input.addEventListener('input', () => {
+  spreadA = spCtl.value(); spCtl.sync(); spreadMoves++;
+  pts = ML.genBlobs(seed, 90, spreadA, 0.13);
+  nb = ML.fitGaussianNB(pts);
+  update();
+});
+
+MF.button(ui.rail, 'Deal me new data', 'seed ' + seed, function () {
+  seed++; this.lastChild.textContent = 'seed ' + seed;
+  pts = ML.genBlobs(seed, 90, spreadA, 0.13);
+  nb = ML.fitGaussianNB(pts);
+  update();
+});
+
+// posterior bars card
+const barCard = document.createElement('div');
+barCard.className = 'card card-pad';
+barCard.innerHTML = `<span class="label">The model's belief about the probe</span>
+  <div style="display:flex;flex-direction:column;gap:10px;margin-top:10px">
+    <div><div class="range-ends"><span>class A (blue)</span><span class="mono" id="pa">—</span></div>
+      <div class="mbar" style="width:100%"><i id="barA" style="background:var(--classA)"></i></div></div>
+    <div><div class="range-ends"><span>class B (orange)</span><span class="mono" id="pb">—</span></div>
+      <div class="mbar" style="width:100%"><i id="barB" style="background:var(--classB)"></i></div></div>
+  </div>`;
+ui.rail.appendChild(barCard);
+const barA = document.getElementById('barA'), barB = document.getElementById('barB');
+const paEl = document.getElementById('pa'), pbEl = document.getElementById('pb');
+
+MF.legend(ui.rail, [
+  ['<span style="width:11px;height:11px;border-radius:50%;background:var(--classA);display:block"></span>', 'class A sample'],
+  ['<span style="width:10px;height:10px;background:var(--classB);transform:rotate(45deg);display:block;margin:0 1px"></span>', 'class B sample'],
+  ['<span style="width:14px;height:14px;border:2px solid rgba(var(--text-rgb),.6);border-radius:50%;display:block"></span>', 'bell-curve rings (1σ, 2σ)'],
+  ['<span style="width:11px;height:11px;border-radius:50%;border:3px solid var(--live);display:block"></span>', 'the probe — drag it'],
+]);
+
+const quest = MF.questCtl(ui.quest, [
+  { id: 'sure', title: 'Make the model CERTAIN', desc: 'Drag the probe deep into orange’s heart until the model is 97%+ sure it’s class B. Watch the belief bars as you travel — they update every pixel.' },
+  { id: 'predict', title: 'Predict: exactly between the classes', desc: 'If the probe sits exactly on the color boundary, the model says…',
+    predict: { q: '', options: ['Class A wins', 'Class B wins', 'Exactly 50 / 50'], answer: 2,
+      whyRight: 'Right — the boundary isn’t a wall, it’s the tie line: every point ON it is a coin flip. Now go find it: step 3.',
+      whyWrong: 'The color boundary IS the set of coin-flip points — where both classes are exactly equally likely. Nothing special “wins” there. Go stand on it: step 3.' } },
+  { id: 'torn', title: 'Find the 50/50 line', desc: 'Park the probe where doubt hits ~100 (that’s |50% − 50%|). The mission bar is your hot/cold meter — it climbs as beliefs even out.' },
+  { id: 'spread', title: 'Stretch blue and watch the border flee', desc: 'Crank Class A spread to the max. The boundary bends AROUND tidy orange — a messy class gets blamed for far-away points, a tight class keeps a small confident zone.' },
+], { onAll: showCode });
+
+const insights = MF.insights(ui.side, [
+  { id: 'bell', title: 'Each class is a bell curve', lockedHint: 'reach 97% certainty to unlock',
+    body: 'Naive Bayes summarizes each class as: its center (mean) and its spread (variance) — the rings you see. To judge a point it asks each bell curve “how typical would this point be for you?”, multiplies in how common each class is, and compares. Bigger likelihood wins.' },
+  { id: 'post', title: 'Probability, not verdicts', lockedHint: 'find the 50/50 line to unlock',
+    body: 'Most classifiers you met so far shout A or B. This one whispers “73% B”. That number is the posterior: P(class | what I see), computed with Bayes’ rule. Doctors, spam filters and self-driving cars all need the confidence, not just the verdict.' },
+  { id: 'naive', title: 'Why “naive”?', lockedHint: 'stretch class A to unlock',
+    body: 'It treats x and y as independent clues — it never checks whether they co-vary. That’s mathematically naive and often false, yet it works absurdly well (classic spam filters are exactly this with thousands of word-clues instead of 2 coordinates). Wrong assumptions can still make great predictions.' },
+]);
+
+const fit = MF.setupCanvas(ui.canvas, 0.66, update);
+MF.drag(ui.canvas, (type, e) => {
+  const d = fit.toData(e);
+  if (type === 'down') dragging = true;
+  if ((type === 'down' || type === 'move') && dragging) {
+    probe.x = Math.max(0.02, Math.min(0.98, d.x));
+    probe.y = Math.max(0.02, Math.min(0.98, d.y));
+    update();
+  }
+  if (type === 'up') dragging = false;
+});
+ui.canvas.addEventListener('keydown', e => {
+  const s = 0.015;
+  if (e.key==='ArrowLeft') probe.x-=s; else if (e.key==='ArrowRight') probe.x+=s;
+  else if (e.key==='ArrowUp') probe.y-=s; else if (e.key==='ArrowDown') probe.y+=s; else return;
+  e.preventDefault(); update();
+});
+
+function ellipse(ctx, c, W, H, mult, col) {
+  ctx.strokeStyle = col; ctx.lineWidth = 1.6; ctx.globalAlpha = 0.55;
+  ctx.beginPath();
+  ctx.ellipse(c.mx*W, c.my*H, Math.sqrt(c.vx)*mult*W, Math.sqrt(c.vy)*mult*H, 0, 0, 6.283);
+  ctx.stroke(); ctx.globalAlpha = 1;
+}
+
+function narration(pB) {
+  const doubt = (1 - Math.abs(pB - 0.5) * 2) * 100;
+  if (pB > 0.97) return 'P(B) = ' + (pB*100).toFixed(1) + '%. The probe is deep inside orange’s bell curve and far outside blue’s. Certainty isn’t magic — it’s just “very typical for one curve, very weird for the other”.';
+  if (pB < 0.03) return 'P(A) = ' + ((1-pB)*100).toFixed(1) + '%. Blue’s bell curve claims this spot almost entirely.';
+  if (doubt > 90) return 'Doubt ' + doubt.toFixed(0) + '/100 — you’re standing on the tie line. Both bell curves rate this point equally typical. One pixel either way tips the verdict.';
+  return 'P(A) = ' + ((1-pB)*100).toFixed(0) + '% vs P(B) = ' + (pB*100).toFixed(0) + '%. The shading you see is this exact number computed at every pixel.';
+}
+
+function update() {
+  const ctx = fit.ctx, W = fit.W(), H = fit.H();
+  const A = MF.cssVar('--classA'), B = MF.cssVar('--classB');
+  ctx.clearRect(0,0,W,H);
+  // posterior-shaded field (confidence as alpha)
+  const cols = 72, rows = 46, cw = W/cols, ch = H/rows;
+  for (let i=0;i<cols;i++) for (let j=0;j<rows;j++) {
+    const p = ML.nbPosterior(nb, (i+0.5)/cols, (j+0.5)/rows);
+    ctx.fillStyle = p > 0.5 ? B : A;
+    ctx.globalAlpha = 0.05 + 0.24 * Math.abs(p - 0.5) * 2;
+    ctx.fillRect(i*cw, j*ch, cw+0.6, ch+0.6);
+  }
+  ctx.globalAlpha = 1;
+  MF.gridLines(ctx, W, H);
+  ellipse(ctx, nb[0], W, H, 1, A); ellipse(ctx, nb[0], W, H, 2, A);
+  ellipse(ctx, nb[1], W, H, 1, B); ellipse(ctx, nb[1], W, H, 2, B);
+  pts.forEach(p => {
+    if (p.label===0) MF.dot(ctx, p.x*W, p.y*H, 4, A);
+    else MF.diamond(ctx, p.x*W, p.y*H, 4.5, B);
+  });
+  const pB = ML.nbPosterior(nb, probe.x, probe.y);
+  MF.dot(ctx, probe.x*W, probe.y*H, 8, pB>0.5?B:A, MF.cssVar('--live'), 3.5);
+
+  barA.style.width = ((1-pB)*100)+'%'; barB.style.width = (pB*100)+'%';
+  paEl.textContent = ((1-pB)*100).toFixed(1)+'%'; pbEl.textContent = (pB*100).toFixed(1)+'%';
+
+  const doubt = (1 - Math.abs(pB-0.5)*2) * 100;
+  const ok = ui.metric.set(doubt, doubt, doubt >= 97);
+  ui.stageInfo.textContent = 'two gaussians · P(class|point) via Bayes’ rule · n = ' + pts.length;
+  ui.stageExtra.textContent = 'probe → ' + (pB>0.5?'B ':'A ') + (Math.max(pB,1-pB)*100).toFixed(0) + '%';
+  ui.footL.textContent = 'drag the probe — shading intensity = model confidence';
+  ui.footR.textContent = 'pale zone = the model isn’t sure';
+  ui.narrate.say(narration(pB));
+
+  if (Math.max(pB, 1-pB) >= 0.97 && quest.current()==='sure') { quest.done('sure'); insights.unlock('bell'); }
+  if (ok && quest.current()==='torn') { quest.done('torn'); insights.unlock('post'); }
+  if (spreadA >= 0.28 && quest.current()==='spread') { quest.done('spread'); insights.unlock('naive'); }
+}
+update();
+
+function showCode() {
+  MF.codeReveal(ui.codePanel, {
+    moduleNum: 4, filename: 'naive_bayes.py',
+    intro: 'You watched two bell curves argue over a point and output a belief instead of a verdict. Here’s that argument in Python — Gaussian Naive Bayes from scratch.',
+    outro: 'Replace (x, y) with thousands of word-counts and this same code is a real spam filter. The math doesn’t change, only the number of clues.',
+    lines: [
+      { c: 'import math', n: 'Just for exp, log, pi and sqrt — a bell curve is one formula.' },
+      { c: '', n: '' },
+      { c: 'def fit(points):', n: '“Training” Naive Bayes = computing averages. That’s why the rings snapped instantly when you stretched class A — nothing iterates.' },
+      { c: '    mean = avg(points); var = avg((p - mean)**2)', n: 'Per class, per axis: the center and the spread. These four numbers per class ARE the model — you saw them as the ellipse rings (1σ, 2σ).' },
+      { c: '    prior = len(points) / n_total', n: 'How common is this class overall? Rare classes need stronger evidence to win — that’s the prior.' },
+      { c: '    return mean, var, prior', n: '' },
+      { c: '', n: '' },
+      { c: 'def gauss(x, mean, var):', n: 'The bell-curve formula: how typical is value x for this class?' },
+      { c: '    return math.exp(-(x-mean)**2 / (2*var)) / math.sqrt(2*math.pi*var)', n: 'Peaks at the mean, shrinks as you leave. Wide var = a fat, tolerant bell (your stretched class A); small var = a narrow, picky one.' },
+      { c: '', n: '' },
+      { c: 'def posterior_B(x, y):', n: 'The belief bars you watched while dragging the probe.' },
+      { c: '    like_A = prior_A * gauss(x, mxA, vxA) * gauss(y, myA, vyA)', n: 'Class A’s case: how common A is × how typical x is for A × how typical y is for A. Multiplying the clues as if independent = the “naive” move.' },
+      { c: '    like_B = prior_B * gauss(x, mxB, vxB) * gauss(y, myB, vyB)', n: 'Class B makes its case with its own bells.' },
+      { c: '    return like_B / (like_A + like_B)', n: 'Bayes’ rule: B’s share of the total evidence. 0.5 exactly = the tie line you hunted for. This one division produced every belief bar you saw.' },
+    ]
+  });
+}
+</script>
+</body>
+</html>

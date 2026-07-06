@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Manifold · 06 Optimization</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/ml.js"></script><script src="../assets/engine.js"></script>
+</head>
+<body>
+<script>
+const ui = MF.shell({
+  num: 6, title: 'Optimization', sub: 'GRADIENT DESCENT & FRIENDS · ROLLING DOWNHILL',
+  mission: 'Reach the valley floor (loss < 0.002), then beat plain GD’s step count with momentum or Adam',
+  metric: { label: 'loss (height above floor)', targetText: 'target < 0.002', targetPct: 4, format: v => v < 0.0001 ? v.toExponential(1) : v.toFixed(4) },
+  prev: { href: '05-svm.html', name: 'Margin-Based Methods' },
+  next: { href: '07-neural.html', name: 'Neural Networks' }
+});
+
+/* state */
+let algo = 'gd';
+let pos = [...ML.surf.start], vel = [0,0], m = [0,0], v = [0,0], adamT = 0;
+let steps = 0, trail = [];
+let auto = false;
+let gdBest = null;           // GD's converged step count
+let divergeStreak = 0, explodedSeen = false;
+const rng = ML.rand(42);
+
+/* controls */
+const segCard = document.createElement('div');
+segCard.className = 'card card-pad';
+segCard.innerHTML = '<span class="label">Optimizer</span><div class="seg" style="margin-top:9px" id="algoseg">' +
+  '<button data-a="gd" class="on">GD</button><button data-a="sgd">SGD</button><button data-a="mom">Momentum</button><button data-a="adam">Adam</button></div>' +
+  '<span class="hint" id="algohint" style="margin-top:8px;display:block">plain gradient descent — one careful step at a time</span>';
+ui.rail.appendChild(segCard);
+const hints = {
+  gd: 'plain gradient descent — one careful step at a time',
+  sgd: 'stochastic GD — the gradient is noisy (a random mini-batch), so the path jitters',
+  mom: 'momentum — a heavy ball that builds speed along the valley',
+  adam: 'adam — per-direction step sizes + momentum; the default in deep learning'
+};
+document.getElementById('algoseg').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  [...e.currentTarget.children].forEach(x => x.classList.remove('on'));
+  b.classList.add('on');
+  algo = b.dataset.a;
+  document.getElementById('algohint').textContent = hints[algo];
+  reset();
+});
+
+const lrCtl = MF.sliderCard(ui.rail, {
+  id: 'lr', label: 'Learning rate — step size', min: -2.3, max: -0.35, step: 0.05, value: Math.log10(0.02),
+  ends: ['0.005 — baby steps', '0.45 — leaps'], bigFmt: v => 'η = ' + Math.pow(10, v).toFixed(3)
+});
+lrCtl.input.addEventListener('input', () => { lrCtl.sync(); });
+
+const rowBtns = document.createElement('div');
+rowBtns.className = 'btnrow';
+ui.rail.appendChild(rowBtns);
+const stepBtn = MF.button(rowBtns, 'Step ▸', '', () => { doStep(); render(); });
+const autoBtn = MF.button(rowBtns, 'Auto-run', '', () => {
+  auto = !auto;
+  autoBtn.firstChild.textContent = auto ? 'Pause ⏸' : 'Auto-run';
+  autoBtn.classList.toggle('on', auto);
+});
+MF.button(ui.rail, 'Reset ball to start', '', () => { reset(); render(); });
+
+const scoreCard = document.createElement('div');
+scoreCard.className = 'card card-pad';
+scoreCard.innerHTML = '<span class="label">Race results — steps to the floor</span><div id="scores" class="mono" style="font-size:12px;line-height:1.9;margin-top:6px">no finishes yet</div>';
+ui.rail.appendChild(scoreCard);
+const results = {};
+function postResult() {
+  results[algo] = Math.min(results[algo] ?? Infinity, steps);
+  if (algo === 'gd') gdBest = results.gd;
+  document.getElementById('scores').innerHTML = Object.entries(results)
+    .sort((a,b)=>a[1]-b[1])
+    .map(([a,s],i)=>(i===0?'🏆 ':'&nbsp;&nbsp;&nbsp;')+a.toUpperCase()+' — '+s+' steps').join('<br>');
+}
+
+/* quest */
+const quest = MF.questCtl(ui.quest, [
+  { id: 'roll', title: 'Roll to the floor with plain GD', desc: 'η ≈ 0.02, press Auto-run. Watch the path: fast across the steep direction, then a slow crawl along the shallow valley. Note your step count — that’s the score to beat.' },
+  { id: 'predict', title: 'Predict: 10× the learning rate', desc: 'With η around 0.2, gradient descent will…',
+    predict: { q: '', options: ['Converge ~10× faster', 'Bounce or explode'], answer: 1,
+      whyRight: 'Right — in the steep direction a 0.2-sized step overshoots the valley wall and lands HIGHER. Go watch the carnage: step 3.',
+      whyWrong: 'Tempting! But the valley is steep side-to-side: a big step overshoots the wall and lands higher than it started. Bigger η is only faster until it isn’t. Go watch the carnage: step 3.' } },
+  { id: 'explode', title: 'Watch it explode', desc: 'Set η near the max, reset, auto-run. The ball ricochets between the valley walls, gaining height. Every failed training run you’ll ever have looks exactly like this from the inside.' },
+  { id: 'beat', title: 'Beat GD with a smarter optimizer', desc: 'Reset. Pick Momentum or Adam, tune η, and reach the floor in fewer steps than plain GD needed. Momentum builds speed along the valley; Adam gives each direction its own step size.' },
+], { onAll: showCode });
+
+const insights = MF.insights(ui.side, [
+  { id: 'ravine', title: 'Why the valley is a ravine', lockedHint: 'converge once to unlock',
+    body: 'Real loss landscapes are steep in some weight-directions and nearly flat in others. Plain GD must use a step size safe for the STEEPEST direction, which makes it painfully slow along the flat one — that crawl you watched is the core problem all fancy optimizers exist to fix.' },
+  { id: 'lr', title: 'The single most important number', lockedHint: 'explode once to unlock',
+    body: 'Too small: converges, eventually, maybe this year. Too big: divergence — loss climbs instead of falls. When someone’s neural net “won’t train”, the learning rate is the first suspect. You’ve now seen both failure modes with your own eyes.' },
+  { id: 'adam', title: 'What momentum and Adam actually add', lockedHint: 'beat GD to unlock',
+    body: 'Momentum remembers its previous direction — bounces cancel out, progress along the valley compounds, like a heavy ball. Adam also tracks how big the gradient usually is in EACH direction and shrinks steps where it’s steep, grows them where it’s flat. That’s why it won your race, and why it’s the default optimizer for most deep learning.' },
+]);
+
+/* canvas */
+const fit = MF.setupCanvas(ui.canvas, 0.62, render);
+const X0 = -1.15, X1 = 1.15, Y0 = -0.72, Y1 = 0.72;
+const toPx = p => [ (p[0]-X0)/(X1-X0), (p[1]-Y0)/(Y1-Y0) ];
+
+function doStep() {
+  const lr = Math.pow(10, lrCtl.value());
+  const before = ML.surf.f(pos[0], pos[1]);
+  let out;
+  if (algo === 'gd') out = ML.gdStep(pos, lr);
+  else if (algo === 'sgd') out = ML.sgdStep(pos, lr, rng);
+  else if (algo === 'mom') { out = ML.momentumStep(pos, vel, lr); vel = out.vel; }
+  else { adamT++; out = ML.adamStep(pos, m, v, adamT, lr * 0.6); m = out.m; v = out.v; }
+  pos = out.pos;
+  pos[0] = Math.max(-3, Math.min(3, pos[0]));
+  pos[1] = Math.max(-3, Math.min(3, pos[1]));
+  steps++;
+  trail.push([...pos]);
+  if (trail.length > 400) trail.shift();
+  const after = ML.surf.f(pos[0], pos[1]);
+  if (after > before * 1.02 && after > 0.01) divergeStreak++; else divergeStreak = 0;
+  if (divergeStreak >= 6) { explodedSeen = true; if (quest.current()==='explode') { quest.done('explode'); insights.unlock('lr'); auto = false; autoBtn.firstChild.textContent='Auto-run'; autoBtn.classList.remove('on'); } }
+}
+function reset() {
+  pos = [...ML.surf.start]; vel=[0,0]; m=[0,0]; v=[0,0]; adamT=0; steps=0; trail=[[...pos]]; divergeStreak=0;
+}
+reset();
+
+function narration(loss) {
+  const lr = Math.pow(10, lrCtl.value());
+  if (divergeStreak >= 3) return 'η = ' + lr.toFixed(2) + ': DIVERGING. Each step lands higher than the last — the step is wider than the valley. Reset and shrink η.';
+  if (loss < 0.002) return 'Floor reached in ' + steps + ' steps with ' + algo.toUpperCase() + '. ' + (algo==='gd' ? 'That slow crawl along the valley? Remember it — then race it with Momentum or Adam.' : (gdBest ? 'Plain GD needed ' + gdBest + '. ' : '') + 'Smarter step-taking, same downhill idea.');
+  if (steps === 0) return 'The rings are height contours of the loss. Steep across, shallow along — a ravine. The ball starts on the rim; get it to the ✕ at the center.';
+  return algo.toUpperCase() + ' · step ' + steps + ' · loss ' + loss.toFixed(4) + '. The gradient points uphill; every update walks the opposite way, scaled by η.';
+}
+
+function render() {
+  const ctx = fit.ctx, W = fit.W(), H = fit.H();
+  ctx.clearRect(0,0,W,H);
+  // contours
+  ctx.lineWidth = 1;
+  [0.002,0.01,0.03,0.07,0.13,0.22,0.34,0.5,0.7].forEach((lvl,i) => {
+    ctx.strokeStyle = 'rgba(' + MF.cssVar('--text-rgb') + ',' + (0.28 - i*0.024) + ')';
+    ctx.beginPath();
+    const a = Math.sqrt(2*lvl/1.0), b = Math.sqrt(2*lvl/9.0);
+    ctx.ellipse((0-X0)/(X1-X0)*W, (0-Y0)/(Y1-Y0)*H, a/(X1-X0)*W, b/(Y1-Y0)*H, 0, 0, 6.283);
+    ctx.stroke();
+  });
+  // minimum
+  const c = toPx([0,0]);
+  ctx.strokeStyle = MF.cssVar('--live'); ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(c[0]*W-7, c[1]*H-7); ctx.lineTo(c[0]*W+7, c[1]*H+7);
+  ctx.moveTo(c[0]*W+7, c[1]*H-7); ctx.lineTo(c[0]*W-7, c[1]*H+7); ctx.stroke();
+  // trail
+  if (trail.length > 1) {
+    ctx.strokeStyle = MF.cssVar('--accent'); ctx.lineWidth = 2; ctx.globalAlpha = 0.85;
+    ctx.beginPath();
+    trail.forEach((p,i) => { const q = toPx(p); i ? ctx.lineTo(q[0]*W, q[1]*H) : ctx.moveTo(q[0]*W, q[1]*H); });
+    ctx.stroke(); ctx.globalAlpha = 1;
+    trail.forEach((p,i) => { if (i % 4 === 0) { const q = toPx(p); MF.dot(ctx, q[0]*W, q[1]*H, 1.8, MF.cssVar('--accent')); } });
+  }
+  // ball
+  const q = toPx(pos);
+  MF.dot(ctx, q[0]*W, q[1]*H, 8, MF.cssVar('--card'), MF.cssVar('--accent'), 3.5);
+
+  const loss = ML.surf.f(pos[0], pos[1]);
+  const converged = loss < 0.002;
+  ui.metric.set(loss, Math.max(2, 100 - Math.min(100, loss*140)), converged);
+  ui.stageInfo.textContent = 'f(x,y) = ½(x² + 9y²) · a ravine: 9× steeper up-down than left-right';
+  ui.stageExtra.textContent = steps + ' steps';
+  ui.footL.textContent = 'rings = equal-loss contours · ✕ = the minimum';
+  ui.footR.textContent = 'trail dots = one every 4 steps';
+  ui.narrate.say(narration(loss));
+
+  if (converged && trail.length > 2) {
+    postResult();
+    if (algo === 'gd' && quest.current() === 'roll') { quest.done('roll'); insights.unlock('ravine'); }
+    if ((algo === 'mom' || algo === 'adam') && gdBest && steps < gdBest && quest.current() === 'beat') {
+      quest.done('beat'); insights.unlock('adam');
+    }
+    if (auto) { auto = false; autoBtn.firstChild.textContent='Auto-run'; autoBtn.classList.remove('on'); }
+  }
+}
+(function loop() {
+  if (auto) { doStep(); render(); }
+  requestAnimationFrame(loop);
+})();
+render();
+
+function showCode() {
+  MF.codeReveal(ui.codePanel, {
+    moduleNum: 6, filename: 'optimizers.py',
+    intro: 'You rolled a ball down a ravine four different ways and learned why η is the most important number in deep learning. Here are those exact update rules.',
+    outro: 'In a real network, pos has millions of coordinates instead of 2 — but these are, character for character, the update rules inside PyTorch’s optim.SGD and optim.Adam.',
+    lines: [
+      { c: 'def grad(x, y):', n: 'The slope of the landscape at the ball’s position. For a neural net this comes from backpropagation; here the calculus is one line.' },
+      { c: '    return x, 9*y', n: 'The 9 is the ravine: the y-direction is 9× steeper. This mismatch is exactly what made plain GD crawl.' },
+      { c: '', n: '' },
+      { c: '# --- plain gradient descent (your first run) ---', n: '' },
+      { c: 'x -= lr * gx;  y -= lr * gy', n: 'The whole algorithm. Step opposite the slope, scaled by η. You watched this line converge at η=0.02 and explode at η=0.2.' },
+      { c: '', n: '' },
+      { c: '# --- momentum (the heavy ball) ---', n: '' },
+      { c: 'vx = 0.9*vx - lr*gx;  x += vx', n: '90% of the previous velocity survives each step. Side-to-side bounces cancel; along-the-valley speed compounds. That’s why it beat GD.' },
+      { c: '', n: '' },
+      { c: '# --- adam (the default) ---', n: '' },
+      { c: 'm = 0.9*m + 0.1*g          # average direction', n: 'Momentum, kept as a running average of the gradient.' },
+      { c: 'v = 0.999*v + 0.001*g**2   # average steepness', n: 'A per-direction memory of how steep it usually is. In the ravine: big for y, small for x.' },
+      { c: 'x -= lr * m / (v**0.5 + 1e-8)', n: 'Divide by the typical steepness: steep directions get small careful steps, flat ones get big strides. One step size that adapts per direction — the fix for ravines, and the reason Adam is everyone’s default.' },
+    ]
+  });
+}
+</script>
+</body>
+</html>
